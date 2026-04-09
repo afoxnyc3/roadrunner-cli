@@ -1,0 +1,161 @@
+tasks:
+- id: TASK-001
+  title: Project scaffold and health check
+  status: todo
+  depends_on: []
+  goal: 'Create the base project structure, verify Python environment, and confirm
+    the health command returns correctly.
+
+    '
+  acceptance_criteria:
+  - roadmap_loop.py health exits 0 and prints 'healthy'
+  - logs/ directory exists and is writable
+  - tasks/tasks.yaml is valid YAML
+  - requirements.txt is present
+  validation_commands:
+  - python roadmap_loop.py health
+  - python -c "import yaml; yaml.safe_load(open('tasks/tasks.yaml'))"
+  - test -f requirements.txt
+  documentation_targets:
+  - CHANGELOG.md
+  - logs/TASK-001.md
+  files_expected:
+  - requirements.txt
+  - roadmap_loop.py
+  - tasks/tasks.yaml
+  notes: Foundation task. Must pass before anything else.
+- id: TASK-002
+  title: Stop hook implementation and validation
+  status: todo
+  depends_on:
+  - TASK-001
+  goal: 'Implement the Stop hook script, wire it into .claude/settings.json, and verify
+    it correctly blocks Claude Code from stopping when tasks remain and allows stopping
+    when ROADMAP_COMPLETE is signaled.
+
+    '
+  acceptance_criteria:
+  - hooks/stop_hook.sh is executable
+  - .claude/settings.json references stop_hook.sh
+  - stop_hook handles stop_hook_active=true without infinite loop
+  - stop_hook blocks when next eligible task exists
+  validation_commands:
+  - test -x hooks/stop_hook.sh
+  - python -c "import json; d=json.load(open('.claude/settings.json')); assert 'Stop'
+    in d['hooks']"
+  - 'echo ''{"stop_hook_active": true}'' | python roadmap_loop.py check-stop; test
+    $? -eq 0'
+  documentation_targets:
+  - CHANGELOG.md
+  - logs/TASK-002.md
+  files_expected:
+  - hooks/stop_hook.sh
+  - .claude/settings.json
+  notes: Core loop enforcement. Without this, overnight runs will not work.
+- id: TASK-003
+  title: TaskCompleted hook for validation gating
+  status: todo
+  depends_on:
+  - TASK-002
+  goal: 'Implement a TaskCompleted hook that runs the current task''s validation_commands
+    before allowing done status. If validation fails, exit 2 and feed the error back
+    to the model.
+
+    '
+  acceptance_criteria:
+  - hooks/task_completed_hook.sh is executable
+  - .claude/settings.json includes TaskCompleted hook
+  - hook exits 2 when validation fails
+  - hook exits 0 when validation passes
+  validation_commands:
+  - test -x hooks/task_completed_hook.sh
+  - python -c "import json; d=json.load(open('.claude/settings.json')); assert 'TaskCompleted'
+    in d['hooks']"
+  documentation_targets:
+  - CHANGELOG.md
+  - logs/TASK-003.md
+  files_expected:
+  - hooks/task_completed_hook.sh
+  notes: Validation gate. Prevents premature completion.
+- id: TASK-004
+  title: PreCompact snapshot hook
+  status: todo
+  depends_on:
+  - TASK-002
+  goal: 'Implement a PreCompact hook that writes a context snapshot to disk before
+    conversation compaction. Snapshot must include current task, iteration count,
+    and status summary so Claude can resume after a context window reset.
+
+    '
+  acceptance_criteria:
+  - hooks/precompact_hook.sh is executable
+  - .claude/settings.json includes PreCompact hook
+  - Running snapshot command creates .context_snapshot.json
+  - .context_snapshot.json contains next_eligible and status_summary fields
+  validation_commands:
+  - test -x hooks/precompact_hook.sh
+  - python roadmap_loop.py snapshot
+  - python -c "import json; d=json.load(open('.context_snapshot.json')); assert 'next_eligible'
+    in d"
+  documentation_targets:
+  - CHANGELOG.md
+  - logs/TASK-004.md
+  files_expected:
+  - hooks/precompact_hook.sh
+  - .context_snapshot.json
+  notes: Enables multi-hour runs without context loss.
+- id: TASK-005
+  title: CLAUDE.md agent brief and loop RACI
+  status: todo
+  depends_on:
+  - TASK-003
+  - TASK-004
+  goal: 'Write CLAUDE.md that gives Claude Code clear operating instructions: one
+    task at a time, start/complete CLI commands, completion signal, and escalation
+    behavior for blocked tasks.
+
+    '
+  acceptance_criteria:
+  - CLAUDE.md exists at project root
+  - CLAUDE.md contains ROADMAP_COMPLETE signal instructions
+  - CLAUDE.md references roadmap_loop.py start and complete commands
+  - CLAUDE.md defines blocked task escalation behavior
+  validation_commands:
+  - test -f CLAUDE.md
+  - grep -q 'ROADMAP_COMPLETE' CLAUDE.md
+  - grep -q 'roadmap_loop.py' CLAUDE.md
+  documentation_targets:
+  - CHANGELOG.md
+  - logs/TASK-005.md
+  files_expected:
+  - CLAUDE.md
+  notes: Agent brief is the contract. Must be precise.
+- id: TASK-006
+  title: End-to-end loop smoke test
+  status: todo
+  depends_on:
+  - TASK-005
+  goal: 'Run a full loop cycle manually: start a test task, validate it, complete
+    it, verify logs and changelog were written, and confirm state file updates correctly.
+    Document the test run.
+
+    '
+  acceptance_criteria:
+  - CHANGELOG.md has at least one entry
+  - logs/ contains at least one task work log
+  - .roadmap_state.json exists and has iteration > 0
+  - python roadmap_loop.py health returns healthy
+  validation_commands:
+  - test -f logs/CHANGELOG.md
+  - ls logs/*.md | grep -v CHANGELOG
+  - python -c "import json; s=json.load(open('.roadmap_state.json')); assert s['iteration']
+    > 0"
+  - python roadmap_loop.py health
+  documentation_targets:
+  - CHANGELOG.md
+  - logs/TASK-006.md
+  - README.md
+  files_expected:
+  - logs/CHANGELOG.md
+  - .roadmap_state.json
+  notes: Prove the loop works end-to-end before running overnight.
