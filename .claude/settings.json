@@ -27,3 +27,23 @@
         "hooks": [
           {
             "type": "command",
+            "command": "bash .claude/hooks/precompact_hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post_write_hook.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

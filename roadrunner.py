@@ -86,13 +86,15 @@ def run_validation(task: dict) -> tuple[bool, list[dict]]:
         passed = result.returncode == 0
         if not passed:
             all_passed = False
-        results.append({
-            "command": cmd,
-            "passed": passed,
-            "returncode": result.returncode,
-            "stdout": result.stdout.strip()[:500],
-            "stderr": result.stderr.strip()[:500],
-        })
+        results.append(
+            {
+                "command": cmd,
+                "passed": passed,
+                "returncode": result.returncode,
+                "stdout": result.stdout.strip()[:500],
+                "stderr": result.stderr.strip()[:500],
+            }
+        )
 
     return all_passed, results
 
@@ -181,12 +183,16 @@ def write_context_snapshot() -> None:
         "current_task": state.get("current_task_id"),
         "iteration": state.get("iteration", 0),
         "next_eligible": next_task["id"] if next_task else None,
-        "status_summary": {
-            t["id"]: t["status"] for t in tasks
-        },
+        "status_summary": {t["id"]: t["status"] for t in tasks},
     }
     (ROOT / ".context_snapshot.json").write_text(json.dumps(snapshot, indent=2))
-    print(json.dumps({"additionalContext": f"Roadmap state snapshot written. Next task: {snapshot['next_eligible']}. Iteration: {snapshot['iteration']}"}))
+    print(
+        json.dumps(
+            {
+                "additionalContext": f"Roadmap state snapshot written. Next task: {snapshot['next_eligible']}. Iteration: {snapshot['iteration']}"
+            }
+        )
+    )
 
 
 # ── CLI commands ──────────────────────────────────────────────────────────────
@@ -198,7 +204,9 @@ def cmd_status(args) -> None:
     print("─" * 60)
     for t in tasks:
         marker = "→" if t.get("status") == "in_progress" else " "
-        print(f"{marker} {t['id']:<13} {t.get('status', 'todo'):<12} {t.get('title', '')}")
+        print(
+            f"{marker} {t['id']:<13} {t.get('status', 'todo'):<12} {t.get('title', '')}"
+        )
     next_t = next_eligible_task(tasks)
     print(f"\nNext eligible: {next_t['id'] if next_t else 'None'}")
 
@@ -223,7 +231,9 @@ def cmd_start(args) -> None:
         print(f"Task {args.task_id} not found.")
         sys.exit(1)
     if not is_eligible(task, tasks):
-        print(f"Task {args.task_id} is not eligible (status={task.get('status')}, check deps).")
+        print(
+            f"Task {args.task_id} is not eligible (status={task.get('status')}, check deps)."
+        )
         sys.exit(1)
 
     state = read_state()
@@ -296,7 +306,9 @@ def cmd_health(args) -> None:
     eligible = [t for t in tasks if is_eligible(t, tasks)]
     done = [t for t in tasks if t.get("status") == "done"]
     blocked = [t for t in tasks if t.get("status") == "blocked"]
-    print(f"healthy — {len(done)}/{len(tasks)} done, {len(eligible)} eligible, {len(blocked)} blocked")
+    print(
+        f"healthy — {len(done)}/{len(tasks)} done, {len(eligible)} eligible, {len(blocked)} blocked"
+    )
 
 
 def cmd_check_stop(args) -> None:
@@ -318,10 +330,14 @@ def cmd_check_stop(args) -> None:
     max_iter = int(args.max_iterations) if args.max_iterations else 50
 
     if iteration >= max_iter:
-        print(json.dumps({
-            "continue": False,
-            "stopReason": f"Max iterations ({max_iter}) reached. Roadmap loop halted."
-        }))
+        print(
+            json.dumps(
+                {
+                    "continue": False,
+                    "stopReason": f"Max iterations ({max_iter}) reached. Roadmap loop halted.",
+                }
+            )
+        )
         sys.exit(0)
 
     tasks = load_tasks()
@@ -329,7 +345,11 @@ def cmd_check_stop(args) -> None:
 
     # Completion signal: Claude outputs ROADMAP_COMPLETE
     if "ROADMAP_COMPLETE" in last_msg:
-        append_changelog("ALL", "complete", notes="Roadmap finished — ROADMAP_COMPLETE signal received.")
+        append_changelog(
+            "ALL",
+            "complete",
+            notes="Roadmap finished — ROADMAP_COMPLETE signal received.",
+        )
         sys.exit(0)
 
     next_task = next_eligible_task(tasks)
@@ -362,7 +382,7 @@ def _build_task_brief(task: dict, iteration: int, max_iter: int) -> str:
         f"Acceptance criteria:\n{criteria or '  (none specified)'}\n\n"
         f"Validation commands (must pass before complete):\n{validation or '  (none)'}\n\n"
         f"Expected files:\n{files or '  (none)'}\n\n"
-        f"When done: run `python roadmap_loop.py complete {task['id']} --notes '...'`\n"
+        f"When done: run `python roadrunner.py complete {task['id']} --notes '...'`\n"
         f"To signal full roadmap done: output ROADMAP_COMPLETE on its own line."
     )
 

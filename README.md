@@ -1,4 +1,4 @@
-# Roadmap Loop
+# Roadrunner CLI
 
 Deterministic agentic loop for Claude Code. Python owns control. Claude owns execution. Hooks enforce completion.
 
@@ -6,7 +6,7 @@ Deterministic agentic loop for Claude Code. Python owns control. Claude owns exe
 
 ```
 tasks/tasks.yaml          ← the queue
-roadmap_loop.py           ← controller: validation, logging, state, stop-check
+roadrunner.py             ← controller: validation, logging, state, stop-check
 .claude/settings.json     ← hooks: Stop, TaskCompleted, PreCompact, PostToolUse
 hooks/stop_hook.sh        ← loop enforcement: block or allow Claude Code to stop
 hooks/task_completed_hook.sh  ← validation gate: must pass before task is done
@@ -17,24 +17,28 @@ CLAUDE.md                 ← agent brief: operating contract for Claude Code
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Clone the repository
+git clone <repo-url> roadrunner-cli
+cd roadrunner-cli
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 2. Make hooks executable
+# 3. Make hooks executable
 chmod +x hooks/*.sh
 
-# 3. Copy hooks where settings.json expects them
+# 4. Copy hooks where settings.json expects them
 mkdir -p .claude/hooks
 cp hooks/*.sh .claude/hooks/
 
-# 4. Verify setup
-python roadmap_loop.py health
+# 5. Verify setup
+python roadrunner.py health
 
-# 5. Check what's next
-python roadmap_loop.py status
+# 6. Check what's next
+python roadrunner.py status
 
-# 6. Launch Claude Code — the loop takes over
-claude --dangerously-skip-permissions  # or with your normal permission level
+# 7. Launch Claude Code — the loop takes over
+claude
 ```
 
 ## Running Overnight
@@ -54,13 +58,13 @@ limit is hit.
 ## Operator Commands
 
 ```bash
-python roadmap_loop.py status           # see all task states
-python roadmap_loop.py next             # see what runs next
-python roadmap_loop.py start TASK-001  # mark in_progress
-python roadmap_loop.py validate TASK-001  # run validation commands
-python roadmap_loop.py complete TASK-001 --notes "did the thing"
-python roadmap_loop.py block TASK-001 --notes "why it's stuck"
-python roadmap_loop.py health           # system check
+python roadrunner.py status           # see all task states
+python roadrunner.py next             # see what runs next
+python roadrunner.py start TASK-001  # mark in_progress
+python roadrunner.py validate TASK-001  # run validation commands
+python roadrunner.py complete TASK-001 --notes "did the thing"
+python roadrunner.py block TASK-001 --notes "why it's stuck"
+python roadrunner.py health           # system check
 ```
 
 ## Task Anatomy

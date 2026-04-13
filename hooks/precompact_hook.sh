@@ -12,4 +12,4 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 # Write snapshot and emit additionalContext JSON for Claude
-python3 "$PROJECT_ROOT/roadmap_loop.py" snapshot
+python3 "$PROJECT_ROOT/roadrunner.py" snapshot

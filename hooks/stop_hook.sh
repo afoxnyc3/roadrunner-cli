@@ -41,5 +41,5 @@ fi
 
 # ── Delegate to Python controller ─────────────────────────────────────────────
 # Pass stdin through to check-stop command which owns all logic.
-echo "$INPUT" | python3 "$PROJECT_ROOT/roadmap_loop.py" check-stop \
+echo "$INPUT" | python3 "$PROJECT_ROOT/roadrunner.py" check-stop \
     --max-iterations "$MAX_ITERATIONS"

@@ -32,7 +32,7 @@ if [ -z "$TASK_ID" ]; then
 fi
 
 # Run validation via Python controller
-python3 "$PROJECT_ROOT/roadmap_loop.py" validate "$TASK_ID"
+python3 "$PROJECT_ROOT/roadrunner.py" validate "$TASK_ID"
 RESULT=$?
 
 if [ $RESULT -ne 0 ]; then
