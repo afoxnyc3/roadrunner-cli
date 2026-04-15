@@ -13,8 +13,8 @@ tasks:
   - tasks/tasks.yaml is valid YAML
   - requirements.txt is present
   validation_commands:
-  - python roadrunner.py health
-  - python -c "import yaml; yaml.safe_load(open('tasks/tasks.yaml'))"
+  - python3 roadrunner.py health
+  - python3 -c"import yaml; yaml.safe_load(open('tasks/tasks.yaml'))"
   - test -f requirements.txt
   documentation_targets:
   - CHANGELOG.md
@@ -41,9 +41,9 @@ tasks:
   - stop_hook blocks when next eligible task exists
   validation_commands:
   - test -x hooks/stop_hook.sh
-  - python -c "import json; d=json.load(open('.claude/settings.json')); assert 'Stop'
+  - python3 -c"import json; d=json.load(open('.claude/settings.json')); assert 'Stop'
     in d['hooks']"
-  - 'echo ''{"stop_hook_active": true}'' | python roadrunner.py check-stop; test
+  - 'echo ''{"stop_hook_active": true}'' | python3 roadrunner.py check-stop; test
     $? -eq 0'
   documentation_targets:
   - CHANGELOG.md
@@ -69,7 +69,7 @@ tasks:
   - hook exits 0 when validation passes
   validation_commands:
   - test -x hooks/task_completed_hook.sh
-  - python -c "import json; d=json.load(open('.claude/settings.json')); assert 'TaskCompleted'
+  - python3 -c"import json; d=json.load(open('.claude/settings.json')); assert 'TaskCompleted'
     in d['hooks']"
   documentation_targets:
   - CHANGELOG.md
@@ -94,8 +94,8 @@ tasks:
   - .context_snapshot.json contains next_eligible and status_summary fields
   validation_commands:
   - test -x hooks/precompact_hook.sh
-  - python roadrunner.py snapshot
-  - python -c "import json; d=json.load(open('.context_snapshot.json')); assert 'next_eligible'
+  - python3 roadrunner.py snapshot
+  - python3 -c"import json; d=json.load(open('.context_snapshot.json')); assert 'next_eligible'
     in d"
   documentation_targets:
   - CHANGELOG.md
@@ -144,13 +144,13 @@ tasks:
   - CHANGELOG.md has at least one entry
   - logs/ contains at least one task work log
   - .roadmap_state.json exists and has iteration > 0
-  - python roadrunner.py health returns healthy
+  - python3 roadrunner.py health returns healthy
   validation_commands:
   - test -f logs/CHANGELOG.md
   - ls logs/*.md | grep -v CHANGELOG
-  - python -c "import json; s=json.load(open('.roadmap_state.json')); assert s['iteration']
+  - python3 -c"import json; s=json.load(open('.roadmap_state.json')); assert s['iteration']
     > 0"
-  - python roadrunner.py health
+  - python3 roadrunner.py health
   documentation_targets:
   - CHANGELOG.md
   - logs/TASK-006.md

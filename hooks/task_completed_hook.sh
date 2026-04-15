@@ -16,12 +16,19 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 INPUT=$(cat)
 
+# Debug: log raw payload so we can confirm field names on first run
+# Remove once TaskCompleted payload schema is confirmed
+echo "$INPUT" >> /tmp/rr_tc_debug.log
+
 # Extract task_id from hook payload
+# NOTE: verify field name against /tmp/rr_tc_debug.log after first run
+# Claude Code may use 'task_id', 'taskId', 'title', or 'content'
 TASK_ID=$(echo "$INPUT" | python3 -c "
 import json, sys
 try:
     d = json.load(sys.stdin)
-    print(d.get('task_id', ''))
+    # Try common field names in priority order
+    print(d.get('task_id', '') or d.get('taskId', '') or '')
 except:
     print('')
 " 2>/dev/null || echo "")

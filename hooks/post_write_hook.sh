@@ -24,16 +24,24 @@ if [ -z "$FILE_PATH" ]; then
     exit 0
 fi
 
-# Python: ruff check
+# Python: ruff check — emit output so Claude sees it on next turn, but never block (exit 0)
 if [[ "$FILE_PATH" == *.py ]]; then
     if command -v ruff &>/dev/null; then
-        ruff check "$FILE_PATH" --quiet || true
+        LINT_OUTPUT=$(ruff check "$FILE_PATH" 2>&1) || true
+        if [ -n "$LINT_OUTPUT" ]; then
+            echo "ruff: $FILE_PATH"
+            echo "$LINT_OUTPUT"
+        fi
     fi
 fi
 
-# YAML: basic syntax check
+# YAML: basic syntax check — emit parse errors without blocking
 if [[ "$FILE_PATH" == *.yaml ]] || [[ "$FILE_PATH" == *.yml ]]; then
-    python3 -c "import yaml; yaml.safe_load(open('$FILE_PATH'))" 2>&1 || true
+    YAML_OUTPUT=$(python3 -c "import yaml; yaml.safe_load(open('$FILE_PATH'))" 2>&1) || true
+    if [ -n "$YAML_OUTPUT" ]; then
+        echo "yaml parse error: $FILE_PATH"
+        echo "$YAML_OUTPUT"
+    fi
 fi
 
 exit 0
