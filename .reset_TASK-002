@@ -1,0 +1,5 @@
+{
+  "task_id": "TASK-002",
+  "summary": "Pre-existing: stop_hook.sh working, settings.json fixed (hooks/ path), infinite loop guard confirmed.",
+  "at": "2026-04-15T12:34:56.693538+00:00"
+}

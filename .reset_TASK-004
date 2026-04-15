@@ -1,0 +1,5 @@
+{
+  "task_id": "TASK-004",
+  "summary": "Pre-existing: precompact_hook.sh working, context_snapshot.json writes correctly.",
+  "at": "2026-04-15T12:34:56.997344+00:00"
+}

@@ -1,7 +1,7 @@
 tasks:
 - id: TASK-001
   title: Project scaffold and health check
-  status: todo
+  status: done
   depends_on: []
   goal: 'Create the base project structure, verify Python environment, and confirm
     the health command returns correctly.
@@ -26,7 +26,7 @@ tasks:
   notes: Foundation task. Must pass before anything else.
 - id: TASK-002
   title: Stop hook implementation and validation
-  status: todo
+  status: done
   depends_on:
   - TASK-001
   goal: 'Implement the Stop hook script, wire it into .claude/settings.json, and verify
@@ -54,7 +54,7 @@ tasks:
   notes: Core loop enforcement. Without this, overnight runs will not work.
 - id: TASK-003
   title: TaskCompleted hook for validation gating
-  status: todo
+  status: done
   depends_on:
   - TASK-002
   goal: 'Implement a TaskCompleted hook that runs the current task''s validation_commands
@@ -79,7 +79,7 @@ tasks:
   notes: Validation gate. Prevents premature completion.
 - id: TASK-004
   title: PreCompact snapshot hook
-  status: todo
+  status: done
   depends_on:
   - TASK-002
   goal: 'Implement a PreCompact hook that writes a context snapshot to disk before
@@ -106,7 +106,7 @@ tasks:
   notes: Enables multi-hour runs without context loss.
 - id: TASK-005
   title: CLAUDE.md agent brief and loop RACI
-  status: todo
+  status: done
   depends_on:
   - TASK-003
   - TASK-004
@@ -132,7 +132,7 @@ tasks:
   notes: Agent brief is the contract. Must be precise.
 - id: TASK-006
   title: End-to-end loop smoke test
-  status: todo
+  status: done
   depends_on:
   - TASK-005
   goal: 'Run a full loop cycle manually: start a test task, validate it, complete
