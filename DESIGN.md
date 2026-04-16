@@ -1,6 +1,6 @@
 # Roadrunner CLI — Design Document
 
-> Last updated: 2026-04-15
+> Last updated: 2026-04-16
 
 ---
 
@@ -29,29 +29,32 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 ### 1.1 Control flow, step by step
 
 1. Claude Code starts with `CLAUDE.md` in scope. Agent reads its brief.
-2. Claude runs `python roadrunner.py next` to identify the current task.
-3. Claude runs `python roadrunner.py start TASK-XXX` — sets status to `in_progress`, increments iteration counter.
+2. Claude runs `python3 roadrunner.py next` to identify the current task.
+3. Claude runs `python3 roadrunner.py start TASK-XXX` — sets status to `in_progress`, records current task in state.
 4. Claude implements the task within the scope defined in `files_expected`.
-5. Claude runs `python roadrunner.py validate TASK-XXX` — executes all `validation_commands`, exits 0 or 1.
+5. Claude runs `python3 roadrunner.py validate TASK-XXX` — executes all `validation_commands`, exits 0 or 1.
 6. If validation fails, Claude fixes and retries.
-7. Claude runs `python roadrunner.py complete TASK-XXX --notes "..."` — re-runs validation, sets status to `done` if passing, writes work log.
+7. Claude runs `python3 roadrunner.py complete TASK-XXX --notes "..."` — re-runs validation, sets status to `done` if passing, writes work log.
 8. Claude finishes its response turn. Stop hook fires.
 9. Stop hook calls `roadrunner.py check-stop` via stdin pipe.
-10. `check-stop` reads `tasks.yaml` and `.roadmap_state.json`, determines next eligible task.
-11. If tasks remain: emits `{"decision": "block", "reason": "<task brief>"}` — Claude receives this as injected context and continues.
-12. If all tasks done: `check-stop` prompts Claude to emit `ROADMAP_COMPLETE`.
-13. Claude emits `ROADMAP_COMPLETE`. Stop hook detects it, exits 0 (allows stop). Loop ends.
-14. If iteration limit hit: hard stop with message.
+10. `check-stop` increments the iteration counter, reads `tasks.yaml` and `.roadmap_state.json`.
+11. If a task is `in_progress`: emits `{"decision": "block", "reason": "<resume brief>"}` — Claude resumes.
+12. If a new `todo` task is eligible: emits `{"decision": "block", "reason": "<task brief>"}` — Claude continues.
+13. If all tasks done: `check-stop` prompts Claude to emit `ROADMAP_COMPLETE`.
+14. Claude emits `ROADMAP_COMPLETE` on its own line. Stop hook detects it via line-anchored regex, exits 0 (allows stop). Loop ends.
+15. If iteration limit hit: hard stop with message.
+16. If a task has been resumed 5+ times without completion: auto-blocked with changelog entry.
 
 ### 1.2 State files
 
 | File | Purpose |
 |---|---|
-| `tasks/tasks.yaml` | Source of truth for task status and definitions |
-| `.roadmap_state.json` | Current task ID and iteration count |
+| `tasks/tasks.yaml` | Source of truth for task status and definitions. Schema-validated on every load. Written atomically via tempfile + `os.replace`. |
+| `.roadmap_state.json` | Current task ID, iteration count, and per-task attempt counter |
 | `.context_snapshot.json` | Written by PreCompact; survives compaction |
 | `logs/CHANGELOG.md` | Append-only audit trail of status changes |
 | `logs/TASK-XXX.md` | Per-task work log with validation output |
+| `logs/trace.jsonl` | Structured JSON trace log — one line per lifecycle event |
 | `.reset_TASK-XXX` | Boundary marker written on task completion |
 
 ---
@@ -82,31 +85,28 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 ```
 
 **Exit codes:**
-- `exit 0` — allow Claude to stop (used when `stop_hook_active=true`)
+- `exit 0` — allow Claude to stop (used when `stop_hook_active=true`, or completion signal detected)
 - `exit 2` — legacy force-continue (deprecated; prefer JSON)
 
 **Infinite loop guard:** If `stop_hook_active` is true in the input, exit 0 immediately. This prevents the hook from calling itself recursively.
 
 **Logic (delegated to `roadrunner.py check-stop`):**
-1. `ROADMAP_COMPLETE` in last message → exit 0
-2. Iteration >= max → output `{"continue": false, ...}`
-3. Eligible tasks exist → output `{"decision": "block", "reason": <task brief>}`
-4. No eligible tasks, some blocked → output block with unblock instruction
-5. All done → prompt Claude to emit `ROADMAP_COMPLETE`
+1. `stop_hook_active` → exit 0
+2. Increment iteration counter, check against max
+3. `ROADMAP_COMPLETE` on last non-empty line of last message → exit 0
+4. In-progress task exists → emit resume brief (increment attempt counter; auto-block if >= max attempts)
+5. Eligible todo task → emit task brief
+6. Blocked tasks exist → report with unblock instruction
+7. Non-done tasks remain → report anomaly
+8. All done → prompt for `ROADMAP_COMPLETE`
 
 ---
 
 ### 2.2 TaskCompleted Hook (`hooks/task_completed_hook.sh`)
 
-**Fires when:** Claude Code agent marks a todo task complete.
+**Fires when:** Claude Code agent marks a task as completed.
 
-**Input (stdin):** JSON object from Claude Code runtime.
-
-```json
-{
-  "task_id": "TASK-003"
-}
-```
+**Input (stdin):** JSON object from Claude Code runtime. Exact payload schema depends on Claude Code version.
 
 **Output:** None required. Feedback goes to stderr on failure.
 
@@ -115,11 +115,13 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 - `exit 2` — block completion; stderr fed back to model
 
 **Logic:**
-1. Extract `task_id` from payload. If absent, pass through (not a managed task).
-2. Run `roadrunner.py validate <task_id>`. If exit != 0, echo error to stderr and exit 2.
-3. On pass, exit 0.
+1. Log raw payload to `logs/.taskcompleted_payloads.log` (temporary, for schema discovery).
+2. Extract a `TASK-###` roadmap ID by scanning common fields (`task_id`, `taskId`, `title`, `content`, nested `tool_input`), then falling back to regex scan of the full payload.
+3. If no roadmap ID found, pass through (not a managed task).
+4. Run `roadrunner.py validate <task_id>`. If exit != 0, echo error to stderr and exit 2.
+5. On pass, exit 0.
 
-**Note on payload format:** This hook assumes the Claude Code `TaskCompleted` event includes a `task_id` field matching roadrunner task IDs. Verify the actual Claude Code hook payload schema before relying on this. If the field name differs, the hook silently passes through (empty TASK_ID check exits 0).
+**Note on payload format:** The hook uses a broad regex-based approach (`TASK-\d{3,}`) to extract roadmap task IDs from any field. This makes it resilient to payload schema changes. The debug log should be removed once the schema is confirmed from a live run.
 
 ---
 
@@ -167,97 +169,113 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 
 **Logic:**
 - `.py` files → `ruff check` (failures suppressed with `|| true`)
-- `.yaml`/`.yml` files → `python3 -c "import yaml; yaml.safe_load(...)"` (failures suppressed)
+- `.yaml`/`.yml` files → `python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$FILE_PATH"` (path passed via argv, not interpolated)
 
 **Behavior:** Claude continues immediately. This hook is informational, not blocking.
 
 ---
 
-## 3. Known Risk Areas for First Run
+## 3. Risk Areas and Mitigations
 
-### CRITICAL: Hook path mismatch
+### Status Legend
 
-**Severity: Showstopper**
-
-`settings.json` references `.claude/hooks/stop_hook.sh` but the hook scripts live at `hooks/stop_hook.sh`.
-
-```json
-// Current (broken)
-"command": "bash .claude/hooks/stop_hook.sh"
-
-// Should be
-"command": "bash hooks/stop_hook.sh"
-```
-
-This affects all four hooks. On first run, every hook will fail with "file not found" and Claude will exit freely after each response. The agentic loop will not run.
-
-**Fix:** Update `settings.json` (see Section 4.1).
+- ✅ **FIXED** — addressed in the hardening pass (2026-04-16)
+- ⚠️ **MITIGATED** — risk reduced but not fully eliminated
+- 🔶 **OPEN** — known limitation, accepted for current scope
 
 ---
 
-### HIGH: Hook SCRIPT_DIR/PROJECT_ROOT calculation
+### ✅ FIXED: Hook path mismatch (was CRITICAL)
 
-The hook scripts compute `PROJECT_ROOT` as:
-```bash
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-```
+**Original risk:** `settings.json` used relative paths (`bash hooks/stop_hook.sh`) that break if Claude changes working directory.
 
-This assumes hooks are exactly one directory below the project root (i.e., at `hooks/stop_hook.sh`). If they were at `.claude/hooks/`, `PROJECT_ROOT` would resolve to `.claude/` and `python3 "$PROJECT_ROOT/roadrunner.py"` would fail.
-
-The path calculation is correct for `hooks/` placement. Confirm this is stable once the settings.json is fixed.
+**Fix:** All hook commands now use `"$CLAUDE_PROJECT_DIR"/hooks/<name>.sh` (ADR-005). Verified working from arbitrary cwd.
 
 ---
 
-### HIGH: TaskCompleted hook payload field name
+### ✅ FIXED: ROADMAP_COMPLETE substring match (was HIGH)
 
-The hook extracts `task_id` from the Claude Code hook payload. The actual field name in the Claude Code `TaskCompleted` event payload may differ (e.g. `title`, `taskId`, or `content`). If it does, the hook silently exits 0 for all task completions — meaning validation is never run, and the gate is inoperative.
+**Original risk:** Any assistant message containing the literal string triggered loop termination.
 
-**Mitigation:** On first run, observe what Claude Code actually sends to this hook by adding temporary logging: `echo "$INPUT" >> /tmp/tc_hook_debug.log`.
-
----
-
-### MEDIUM: `python roadrunner.py` vs `python3`
-
-`settings.json` hook commands call `python3`. `CLAUDE.md` instructs Claude to call `python roadrunner.py`. If the system `python` is Python 2 or absent, Claude's direct calls will fail. The hooks are safe (use `python3`). The agent-facing commands may not be.
-
-**Fix:** Standardize on `python3` in `CLAUDE.md` command examples, or ensure `python` → `python3` in the runtime environment.
+**Fix:** Line-anchored regex on the last non-empty line only (ADR-001). Task brief no longer emits the sentinel as a matchable line. 9 test cases cover edge cases.
 
 ---
 
-### MEDIUM: `pyyaml` dependency not enforced
+### ✅ FIXED: check-stop treated in-progress as "all done" (was CRITICAL)
 
-`roadrunner.py` imports `yaml` at the top level. If `pyyaml` is not installed in the active Python environment, every command fails with an ImportError. `requirements.txt` does not exist yet (TASK-001 creates it, but the tool needs yaml to even start TASK-001).
+**Original risk:** After `cmd_start`, the active task became invisible to `next_eligible_task()`. If Claude responded before calling `complete`, the hook declared all work finished.
 
-**Fix:** Install `pyyaml` manually before first run: `pip3 install pyyaml`. After TASK-001, `requirements.txt` will capture this.
-
----
-
-### MEDIUM: Iteration counter only increments on `start`
-
-`check-stop` reads the iteration count from `.roadmap_state.json`. The counter only increments when Claude calls `python roadrunner.py start TASK-XXX`. If Claude skips calling `start` and jumps straight to implementation, the counter never advances, the max_iterations guard never triggers, and a runaway session can loop indefinitely.
-
-**Mitigation:** The Stop hook also checks for eligible tasks and the ROADMAP_COMPLETE signal, so it won't loop truly forever. But the iteration cap fails silently.
+**Fix:** `cmd_check_stop` now checks for `in_progress` tasks first and emits a resume brief (ADR-002). Only declares completion when no `todo`, `in_progress`, or `blocked` tasks remain.
 
 ---
 
-### MEDIUM: tasks.yaml write is not atomic
+### ✅ FIXED: Shell injection in post_write_hook.sh (was HIGH)
 
-`save_tasks()` reads the full file, replaces the tasks list, and overwrites. If interrupted mid-write, the YAML is corrupted and all subsequent commands fail. No backup is created.
+**Original risk:** `$FILE_PATH` interpolated into a single-quoted Python string. A path containing `'` could execute arbitrary Python.
 
-**Low-risk for a local tool with short writes. Acceptable for MVP. Document as known limitation.**
-
----
-
-### LOW: `set -euo pipefail` in hooks + python3 failures
-
-All hooks use `set -euo pipefail`. If `python3` is unavailable or the script has a non-zero exit for any incidental reason, the hook exits non-zero. For the Stop hook, a non-zero exit (not 0 or 2) is ambiguous — Claude Code may treat it as an error rather than a clean allow-stop. Test with `echo '{}' | bash hooks/stop_hook.sh` before first run.
+**Fix:** Path passed via `sys.argv[1]` instead of f-string interpolation. Verified with injection canary test.
 
 ---
 
-### LOW: PostToolUse lint output not visible
+### ✅ FIXED: Iteration counter only incremented on start (was MEDIUM)
 
-`post_write_hook.sh` uses `|| true` on all lint commands. Ruff failures are silently swallowed. The hook always exits 0. Claude never sees lint feedback from this hook. If the intent is feedback-on-next-turn, the output needs to be emitted without suppression and without causing a non-zero exit.
+**Original risk:** If Claude skipped `start`, the iteration counter never advanced and the max-iterations cap was disabled.
+
+**Fix:** Iteration counter now increments in `cmd_check_stop`, which fires every turn regardless of whether `start` was called.
+
+---
+
+### ✅ FIXED: Non-atomic save_tasks (was MEDIUM)
+
+**Original risk:** SIGINT mid-write could corrupt `tasks.yaml`.
+
+**Fix:** Writes to `.tmp` file, `fsync`, then `os.replace` (ADR-004).
+
+---
+
+### ✅ FIXED: python vs python3 mismatch (was MEDIUM)
+
+**Original risk:** `justfile` used `python`, hooks used `python3`.
+
+**Fix:** All invocations standardized on `python3` across justfile, CLAUDE.md, and hooks.
+
+---
+
+### ✅ FIXED: cmd_block silent exit (was LOW)
+
+**Original risk:** `cmd_block` exited with code 1 but no error message on missing task.
+
+**Fix:** Now prints `Task {id} not found.` before exiting.
+
+---
+
+### ⚠️ MITIGATED: TaskCompleted hook payload field name (was HIGH)
+
+**Original risk:** Hook tried `task_id` then `taskId`. If the actual field name differs, the validation gate is silently inoperative.
+
+**Mitigation:** Hook now uses regex scanning (`TASK-\d{3,}`) across all common fields and the full payload as a fallback. Debug log writes to `logs/.taskcompleted_payloads.log` (project-local, not `/tmp`). Remove after confirming on a live run.
+
+**Remaining risk:** If the Claude Code `TaskCompleted` payload contains no reference to a `TASK-###` identifier, the gate still passes through. Verify on first live run.
+
+---
+
+### ⚠️ MITIGATED: Retry storms (was UNADDRESSED)
+
+**Mitigation:** Per-task attempt counter with auto-block after 5 attempts (ADR-003). Configurable via `--max-attempts`.
+
+**Remaining risk:** A task that legitimately needs many iterations will be auto-blocked. Operator must manually unblock and retry.
+
+---
+
+### 🔶 OPEN: No automated tests for hooks (bash scripts)
+
+The pytest suite covers `roadrunner.py` controller logic (48 tests). The bash hooks are tested manually only. Hook-level integration tests (mocked Claude Code payloads piped through bash scripts) would close this gap.
+
+---
+
+### 🔶 OPEN: Single-author, single-machine assumptions
+
+File locking, concurrent invocations, and multi-project parallel runs are not supported. Acceptable for the current single-operator scope.
 
 ---
 
@@ -275,57 +293,33 @@ All hooks use `set -euo pipefail`. If `python3` is unavailable or the script has
 
 ---
 
-## 4. Recommended Fixes Before First Run
+## 4. Setup for a New Project
 
-### 4.1 Fix settings.json hook paths (REQUIRED)
-
-Replace `.claude/hooks/` with `hooks/` in all four hook commands:
-
-```json
-{
-  "hooks": {
-    "Stop": [{"hooks": [{"type": "command", "command": "bash hooks/stop_hook.sh", "timeout": 30}]}],
-    "TaskCompleted": [{"hooks": [{"type": "command", "command": "bash hooks/task_completed_hook.sh", "timeout": 60}]}],
-    "PreCompact": [{"hooks": [{"type": "command", "command": "bash hooks/precompact_hook.sh", "timeout": 30}]}],
-    "PostToolUse": [{"matcher": "Write|Edit|MultiEdit", "hooks": [{"type": "command", "command": "bash hooks/post_write_hook.sh", "timeout": 30}]}]
-  }
-}
-```
-
-### 4.2 Pre-install pyyaml (REQUIRED)
+### 4.1 Copy-in procedure
 
 ```bash
-pip3 install pyyaml
+# From target project root
+cp /path/to/roadrunner-cli/roadrunner.py .
+cp -r /path/to/roadrunner-cli/hooks ./hooks
+cp -r /path/to/roadrunner-cli/.claude ./.claude
+mkdir -p tasks logs
+# Create your tasks/tasks.yaml
+# Create your CLAUDE.md (use roadrunner-cli/CLAUDE.md as template)
+pip3 install -r requirements.txt
+python3 roadrunner.py health
 ```
 
-Or create a minimal `requirements.txt` by hand before running:
-```
-pyyaml>=6.0
-```
-
-Then `pip3 install -r requirements.txt`.
-
-### 4.3 Debug the TaskCompleted hook payload
-
-Add a debug log line before the `TASK_ID` extraction to capture what Claude Code actually sends:
-
-```bash
-echo "$INPUT" >> /tmp/rr_tc_debug.log
-```
-
-Remove after confirming the field name. Do this before the first real overnight run.
-
-### 4.4 Smoke test hooks before first live run
+### 4.2 Smoke test hooks before first live run
 
 ```bash
 # Stop hook — should return {"decision": "block", "reason": "..."} or allow stop
-echo '{"stop_hook_active": false, "last_assistant_message": "some text"}' | bash hooks/stop_hook.sh
+echo '{"stop_hook_active": false, "last_assistant_message": "some text"}' | bash "$CLAUDE_PROJECT_DIR"/hooks/stop_hook.sh
 
 # Infinite loop guard — should exit 0 silently
-echo '{"stop_hook_active": true}' | bash hooks/stop_hook.sh; echo "exit: $?"
+echo '{"stop_hook_active": true}' | bash "$CLAUDE_PROJECT_DIR"/hooks/stop_hook.sh; echo "exit: $?"
 
-# ROADMAP_COMPLETE detection
-echo '{"stop_hook_active": false, "last_assistant_message": "ROADMAP_COMPLETE"}' | bash hooks/stop_hook.sh; echo "exit: $?"
+# ROADMAP_COMPLETE detection (must be last line)
+printf '%s' '{"stop_hook_active": false, "last_assistant_message": "done\n\nROADMAP_COMPLETE"}' | bash "$CLAUDE_PROJECT_DIR"/hooks/stop_hook.sh; echo "exit: $?"
 
 # Snapshot
 python3 roadrunner.py snapshot && cat .context_snapshot.json
@@ -334,15 +328,14 @@ python3 roadrunner.py snapshot && cat .context_snapshot.json
 python3 roadrunner.py health
 ```
 
-### 4.5 Standardize Python invocation in CLAUDE.md
+### 4.3 Post-first-run verification
 
-Update command examples to use `python3`:
-```bash
-python3 roadrunner.py status
-python3 roadrunner.py next
-python3 roadrunner.py start TASK-XXX
-...
-```
+After the first real Claude Code session with hooks active:
+
+1. Check `logs/.taskcompleted_payloads.log` for the actual `TaskCompleted` payload schema.
+2. Confirm the `TASK-###` regex extraction worked (or adjust field probing if needed).
+3. Remove the debug log line from `hooks/task_completed_hook.sh` once confirmed.
+4. Review `logs/trace.jsonl` to verify structured logging is capturing events.
 
 ---
 
@@ -352,7 +345,7 @@ python3 roadrunner.py start TASK-XXX
 
 ### Option A: External runner (symlink/PATH reference)
 
-Claude Code in a target project calls roadrunner.py from a shared location (e.g. `~/dev/projects/roadrunner-cli/roadrunner.py`). Each target project has its own `tasks.yaml`.
+Claude Code in a target project calls roadrunner.py from a shared location. Each target project has its own `tasks.yaml`.
 
 Pros: single source of truth for roadrunner.py.
 Cons: absolute path in CLAUDE.md and settings.json means portability breaks. If the runner is updated, all active projects get the change immediately — risky during a live run. PATH setup required.
@@ -361,31 +354,29 @@ Cons: absolute path in CLAUDE.md and settings.json means portability breaks. If 
 
 Copy `roadrunner.py`, the `hooks/` directory, and `.claude/settings.json` into the target project. Target project provides its own `tasks.yaml`.
 
-Pros: fully self-contained, no external dependencies, no version skew risk mid-run, works offline, hooks resolve via relative paths which are stable.
+Pros: fully self-contained, no external dependencies, no version skew risk mid-run, works offline.
 Cons: roadrunner.py changes need to be propagated manually to each project.
-
-### Copy-in procedure for a new project
-
-```bash
-# From target project root
-cp /path/to/roadrunner-cli/roadrunner.py .
-cp -r /path/to/roadrunner-cli/hooks ./hooks
-cp /path/to/roadrunner-cli/.claude/settings.json .claude/settings.json
-mkdir -p tasks logs
-# Create your tasks/tasks.yaml
-# Create your CLAUDE.md (use roadrunner-cli/CLAUDE.md as template)
-pip3 install pyyaml
-python3 roadrunner.py health
-```
 
 ### Future: pip installable
 
-When roadrunner stabilizes, package it as `roadrunner-cli` on PyPI. Target projects `pip install roadrunner-cli` and call it via `roadrunner <command>`. Hooks remain in the target repo (they need to be local to Claude Code's working directory). This gives a clean separation: runner logic is versioned and shared, task definitions and hooks are per-project.
+When roadrunner stabilizes, package as `roadrunner-cli` on PyPI. Target projects `pip install roadrunner-cli` and call via `roadrunner <command>`. Hooks remain in the target repo. Runner logic is versioned and shared; task definitions and hooks are per-project.
 
 ---
 
-## 6. Open Questions
+## 6. Architecture Decision Records
 
-1. Does Claude Code's `TaskCompleted` hook payload include a field named `task_id`? Or something else? (See risk 3.2)
-2. Should `post_write_hook.sh` emit lint results non-fatally? Currently suppressed entirely.
-3. Is `python` or `python3` the right invocation in the target environment? Standardize before first run.
+| ADR | Title | Status |
+|---|---|---|
+| [ADR-001](docs/adr/001-line-anchored-completion-signal.md) | Line-Anchored Completion Signal | Accepted |
+| [ADR-002](docs/adr/002-check-stop-in-progress-awareness.md) | Check-Stop In-Progress Task Awareness | Accepted |
+| [ADR-003](docs/adr/003-retry-storm-prevention.md) | Per-Task Attempt Counter and Auto-Block | Accepted |
+| [ADR-004](docs/adr/004-atomic-writes-and-data-integrity.md) | Atomic File Writes for State Integrity | Accepted |
+| [ADR-005](docs/adr/005-absolute-hook-paths.md) | Absolute Hook Paths via $CLAUDE_PROJECT_DIR | Accepted |
+| [ADR-006](docs/adr/006-structured-trace-logging.md) | Structured JSON Trace Logging | Accepted |
+
+---
+
+## 7. Open Questions
+
+1. Does Claude Code's `TaskCompleted` hook payload include a `TASK-###` reference in any field? (Verify on first live run via `logs/.taskcompleted_payloads.log`)
+2. Does `additionalContext` from the PreCompact hook reliably survive compaction? (Verify by observing Claude's behavior after a context reset)

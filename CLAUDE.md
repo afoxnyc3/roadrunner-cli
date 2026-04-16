@@ -25,25 +25,28 @@ You are executing a deterministic roadmap. Python owns control. You own implemen
 
 When ALL tasks are `done` and there is no remaining eligible work:
 
-Output this exact string on its own line:
+Output this exact string on its own line (must be the last non-empty line of your message):
 
 ```
 ROADMAP_COMPLETE
 ```
 
 This halts the loop. Do not output it unless the roadmap is genuinely finished.
+Do not quote it mid-sentence — the signal is line-anchored and only triggers when it appears alone on the final line.
 
 ---
 
 ## Blocked Tasks
 
-If a task cannot be completed due to an unresolvable dependency, external blocker, or repeated validation failure (3+ attempts):
+If a task cannot be completed due to an unresolvable dependency or external blocker:
 
 ```bash
 python3 roadrunner.py block TASK-XXX --notes "reason for block"
 ```
 
 Document what is blocking. Do not keep retrying indefinitely.
+
+**Auto-block:** If the Stop hook detects you have resumed the same in-progress task 5 times without completing it, the task is automatically blocked. You will be notified when this happens.
 
 ---
 
@@ -87,11 +90,16 @@ python3 roadrunner.py health                        # system health check
 
 ## What the Stop Hook Does
 
-After every response, the Stop hook checks:
-- Is `stop_hook_active` true? → allow stop (prevents infinite loop)
-- Did you output `ROADMAP_COMPLETE`? → allow stop
-- Are there eligible tasks? → inject the next task brief and block stop
-- Are all tasks done? → prompt you to output `ROADMAP_COMPLETE`
-- Iteration limit reached? → hard stop with message
+After every response, the Stop hook checks (in this order):
+
+1. Is `stop_hook_active` true? → allow stop (prevents infinite loop)
+2. Iteration limit reached? → hard stop with message
+3. Did you output `ROADMAP_COMPLETE` as the last line? → allow stop
+4. Is a task `in_progress`? → inject a resume brief and block stop
+5. Are there eligible `todo` tasks? → inject the next task brief and block stop
+6. Are tasks blocked? → report blocked tasks and block stop
+7. Are all tasks done? → prompt you to output `ROADMAP_COMPLETE`
+
+**Auto-block guard:** If you resume the same in-progress task 5+ times without completing it, the hook auto-blocks the task and tells you to move on.
 
 You do not need to manage this. The hook manages it. Just do the work.
