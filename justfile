@@ -43,3 +43,16 @@ install:
 # Make all hooks executable
 hooks:
     chmod +x hooks/*.sh
+
+# Run the full CI gate locally (pytest + ruff)
+ci:
+    pytest tests/ -v
+    ruff check roadrunner.py hooks/ tests/
+
+# Run tests only
+test:
+    pytest tests/ -v
+
+# Run lint only
+lint:
+    ruff check roadrunner.py hooks/ tests/

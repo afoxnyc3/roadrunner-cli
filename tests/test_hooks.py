@@ -142,3 +142,67 @@ class TestPostWriteHook:
         result = run_hook("post_write_hook.sh", payload)
         assert result.returncode == 0
         assert canary.exists(), "Shell injection canary was deleted!"
+
+
+# ── Crash-recovery mid-task (end-to-end) ─────────────────────────────────────
+
+
+class TestCrashRecoveryMidTask:
+    """Simulate process death between `start` and `complete`.
+
+    Drives roadrunner.py as a subprocess to prove the on-disk state machine
+    alone is enough for the Stop hook to pick up the in-progress task on the
+    next iteration — no in-memory state required.
+    """
+
+    def _write_min_project(self, root: Path) -> None:
+        import yaml as _yaml
+        (root / "tasks").mkdir()
+        (root / "logs").mkdir()
+        tasks = {
+            "tasks": [
+                {
+                    "id": "TASK-001",
+                    "title": "First",
+                    "status": "todo",
+                    "depends_on": [],
+                    "validation_commands": ["true"],
+                }
+            ]
+        }
+        with open(root / "tasks" / "tasks.yaml", "w") as f:
+            _yaml.dump(tasks, f)
+
+    def test_start_then_crash_then_check_stop_resumes(self, tmp_path):
+        import shutil
+        import yaml as _yaml
+
+        # Stage an isolated project tree with a copy of roadrunner.py
+        self._write_min_project(tmp_path)
+        shutil.copy2(PROJECT_ROOT / "roadrunner.py", tmp_path / "roadrunner.py")
+
+        # Step 1: start the task in one subprocess (simulating one loop iteration)
+        start = subprocess.run(
+            ["python3", "roadrunner.py", "start", "TASK-001"],
+            cwd=str(tmp_path), capture_output=True, text=True,
+        )
+        assert start.returncode == 0, start.stderr
+
+        # Step 2: simulate crash — no `complete` call. State on disk must reflect in-progress.
+        with open(tmp_path / "tasks" / "tasks.yaml") as f:
+            after = _yaml.safe_load(f)
+        assert after["tasks"][0]["status"] == "in_progress"
+        state = json.loads((tmp_path / ".roadmap_state.json").read_text())
+        assert state["current_task_id"] == "TASK-001"
+
+        # Step 3: next loop iteration fires the Stop hook → check-stop must resume.
+        payload = json.dumps({"stop_hook_active": False, "last_assistant_message": "mid-work"})
+        resume = subprocess.run(
+            ["python3", "roadrunner.py", "check-stop", "--max-iterations", "50"],
+            cwd=str(tmp_path), input=payload, capture_output=True, text=True,
+        )
+        assert resume.returncode == 0, resume.stderr
+        decision = json.loads(resume.stdout)
+        assert decision["decision"] == "block"
+        assert "RESUME IN-PROGRESS" in decision["reason"]
+        assert "TASK-001" in decision["reason"]

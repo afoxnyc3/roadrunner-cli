@@ -122,18 +122,38 @@ Every task produces:
 - `.context_snapshot.json` — roadmap state for context recovery after compaction
 - `.reset_TASK-XXX` — boundary marker per completed task
 
+### Log retention
+
+`trace.jsonl` and `CHANGELOG.md` are rotated at the task boundary (each `reset`):
+when either exceeds 10 MB, it is renamed with a UTC timestamp suffix and gzipped
+in place. Rotated archives older than 7 days are deleted automatically. Per-task
+work logs (`logs/TASK-XXX.md`) are not rotated — they are authoritative per-task
+history and expected to stay small.
+
+Tune by editing `LOG_ROTATE_BYTES` and `LOG_RETAIN_DAYS` in `roadrunner.py`.
+
 ## Tests
 
 ```bash
 python3 -m pytest tests/ -v
 ```
 
-73 tests across two files covering schema validation (including task ID format
-and validation timeout), eligibility (including circular dependency behavior),
-completion signal detection, state management, atomic saves, validation execution
-(including subprocess timeout handling), check-stop logic (including auto-block
-and iteration cap), trace logging, task brief generation, corrupt input handling,
-and hook integration tests (Stop, SessionStart, PreCompact, PostToolUse).
+Unit and subprocess-level integration tests across `tests/test_roadrunner.py`
+and `tests/test_hooks.py` covering:
+
+- Schema validation (task ID format, validation timeout)
+- Eligibility (including circular-dependency behaviour)
+- Completion signal detection
+- State management, atomic saves, rolling task backups
+- Validation execution including subprocess timeout
+- `check-stop` logic (resume, auto-block, iteration cap)
+- Trace logging, log rotation, log retention
+- Task-brief generation
+- Error handling (corrupt YAML, unreadable state, failed log writes)
+- Git branching (clean merge, merge-conflict abort, missing branch)
+- Crash-recovery mid-task (start → kill → resume via on-disk state)
+- Hook integration (Stop, SessionStart, PreCompact, PostToolUse) including a
+  shell-injection canary.
 
 ## Using in Another Project
 
@@ -142,3 +162,33 @@ Copy `roadrunner.py`, the `hooks/` directory, and `.claude/settings.json` into y
 ## Trust Boundary
 
 `tasks.yaml` is executable configuration — `validation_commands` run via `shell=True` with your full privileges. Treat it like a Makefile. See [DESIGN.md](DESIGN.md) for details.
+
+## Troubleshooting
+
+### Hooks appear to misbehave / JSON parse errors
+
+Claude Code hooks read structured JSON from stdin. If your `~/.zshrc` or
+`~/.bashrc` prints output unconditionally — for example, an `echo` that runs on
+every shell start, or a tool like `direnv`/`nvm` that reports activity — that
+output is prepended to the JSON payload the hook sees, and hook parsing breaks.
+
+Wrap any such output in an interactive-shell guard so it only runs for a human
+terminal, not for hook subshells:
+
+```bash
+# in ~/.zshrc or ~/.bashrc
+if [[ $- == *i* ]]; then
+  echo "hello developer"   # only runs for interactive sessions
+fi
+```
+
+Signs you are hitting this: the Stop hook silently allows the loop to end, or
+`logs/trace.jsonl` stops receiving `check_stop` events.
+
+### Tests
+
+```bash
+just test          # pytest
+just lint          # ruff
+just ci            # both (same command CI runs)
+```

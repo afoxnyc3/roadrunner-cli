@@ -77,19 +77,26 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 }
 ```
 
-**Output (stdout):** JSON control object.
+**Output (stdout):** JSON control object. Two distinct shapes for two distinct outcomes — they are not interchangeable.
 
 ```json
-// Force continuation with task brief injected into next turn
+// Soft block: force Claude to continue with the reason as injected context.
+// Used for every case where the loop should keep running (resume brief,
+// next-task brief, blocked-task report, "all done, emit ROADMAP_COMPLETE").
 {"decision": "block", "reason": "Continue working. Task TASK-002..."}
 
-// Hard stop (roadmap done or max iterations)
-{"continue": false, "stopReason": "Max iterations (50) reached."}
+// Hard stop: terminate the Claude Code session entirely with stopReason
+// displayed to the user. Used only for the iteration cap.
+{"continue": false, "stopReason": "Max iterations (50) reached. Roadmap loop halted."}
 ```
 
+Per the Claude Code hooks reference: `{"continue": false}` overrides any `decision: "block"` and forces a hard halt. Never emit both in the same payload.
+
 **Exit codes:**
-- `exit 0` — allow Claude to stop (used when `stop_hook_active=true`, or completion signal detected)
-- `exit 2` — legacy force-continue (deprecated; prefer JSON)
+- `exit 0` — default. JSON on stdout is how the hook communicates its decision.
+- `exit 2` — legacy force-continue (stderr surfaces to Claude). Prefer JSON.
+
+The hook emits `exit 0` plus no JSON in three cases: `stop_hook_active=true`, `ROADMAP_COMPLETE` signal received, and iteration cap reached (after printing the `{"continue": false, ...}` payload).
 
 **Infinite loop guard:** If `stop_hook_active` is true in the input, exit 0 immediately. This prevents the hook from calling itself recursively.
 
@@ -303,6 +310,31 @@ File locking, concurrent invocations, and multi-project parallel runs are not su
 **Original risk:** `write_state()` used `Path.write_text()` directly. A crash during state write could corrupt `.roadmap_state.json`.
 
 **Fix:** `write_state()` now uses the same temp-file + fsync + `os.replace()` pattern as `save_tasks()` (ADR-004 updated).
+
+---
+
+### 🔶 OPEN: Git merge conflict on task completion
+
+**Risk:** When `cmd_complete` merges `roadrunner/TASK-XXX` back into the base branch, a conflict between the task branch and work landed on the base branch during the task causes the merge to fail.
+
+**Behavior today:** `merge_task_branch()` detects the non-zero return code, runs `git merge --abort` to return the working tree to a clean state, records a `git_merge_error` event in `logs/trace.jsonl`, and returns `False`. The task is still marked `done` in `tasks.yaml` because validation passed — the branch is left intact for manual resolution and the loop continues.
+
+**Operator resolution:**
+
+```bash
+# Inspect the conflicting branch
+git checkout roadrunner/TASK-XXX
+git rebase main                      # or: git merge main
+# resolve conflicts, then
+git rebase --continue                # or: git merge --continue
+
+# Merge back and clean up
+git checkout main
+git merge roadrunner/TASK-XXX
+git branch -d roadrunner/TASK-XXX
+```
+
+**Why accepted:** The task's validation already passed on the isolated branch. Auto-resolving conflicts would risk corrupting the change. Test coverage: `TestGitBranching::test_merge_conflict_reports_failure`.
 
 ---
 

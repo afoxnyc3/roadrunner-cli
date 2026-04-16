@@ -17,8 +17,14 @@ __pycache__/
 .context_snapshot.json
 .reset_TASK-*
 logs/trace.jsonl
+logs/trace.jsonl.*
+logs/CHANGELOG.md.*
 tasks/tasks.yaml.bak
+tasks/tasks.yaml.bak.*
 tasks/tasks.yaml.tmp
+
+# Claude Code session-local
+.claude/scheduled_tasks.lock
 
 # OS
 .DS_Store

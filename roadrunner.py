@@ -8,16 +8,55 @@ Hooks own: stop enforcement, completion gating, context snapshots.
 """
 
 import argparse
+import gzip
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TypedDict
 
 import yaml
+
+
+# ── Type aliases ─────────────────────────────────────────────────────────────
+# These are structural hints only — every function still accepts plain dicts
+# so callers (including tests) need no changes. They exist so editors flag
+# key typos and make the implicit schema explicit.
+
+
+class Task(TypedDict, total=False):
+    id: str
+    title: str
+    status: str                # "todo" | "in_progress" | "done" | "blocked"
+    depends_on: list[str]
+    goal: str
+    acceptance_criteria: list[str]
+    validation_commands: list[str]
+    validation_timeout: int
+    files_expected: list[str]
+    documentation_targets: list[str]
+    notes: str
+
+
+class RoadmapState(TypedDict, total=False):
+    current_task_id: str | None
+    iteration: int
+    attempts_per_task: dict[str, int]
+    updated_at: str
+    base_branch: str
+
+
+class ValidationResult(TypedDict, total=False):
+    command: str
+    passed: bool
+    returncode: int
+    stdout: str
+    stderr: str
+    timed_out: bool
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +67,7 @@ CHANGELOG = LOGS_DIR / "CHANGELOG.md"
 STATE_FILE = ROOT / ".roadmap_state.json"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
 TASKS_BACKUP = TASKS_FILE.with_suffix(".yaml.bak")
+TASKS_BACKUP_KEEP = 5  # number of rolling tasks.yaml.bak.N copies to retain
 LOGS_DIR.mkdir(exist_ok=True)
 
 # ── YAML helpers ─────────────────────────────────────────────────────────────
@@ -62,20 +102,50 @@ def validate_task_schema(task: dict, index: int) -> None:
 
 
 def load_tasks() -> list[dict]:
-    with open(TASKS_FILE) as f:
-        data = yaml.safe_load(f) or {}
+    try:
+        with open(TASKS_FILE) as f:
+            data = yaml.safe_load(f) or {}
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            f"tasks file not found at {TASKS_FILE}. Create it before running any command."
+        ) from exc
+    except yaml.YAMLError as exc:
+        # Hard stop: without a valid queue the loop cannot make decisions.
+        raise ValueError(
+            f"tasks file at {TASKS_FILE} is not valid YAML: {exc}. "
+            f"Check tasks/tasks.yaml.bak for the last known-good version."
+        ) from exc
     tasks = data.get("tasks", [])
     for i, task in enumerate(tasks):
         validate_task_schema(task, i)
     return tasks
 
 
+def _rotate_task_backups() -> None:
+    """Keep TASKS_BACKUP_KEEP rolling backups of tasks.yaml.
+
+    Order: tasks.yaml.bak (newest) → tasks.yaml.bak.1 → ... → tasks.yaml.bak.N (oldest).
+    Callers have already confirmed TASKS_FILE exists.
+    """
+    oldest = TASKS_FILE.with_suffix(f".yaml.bak.{TASKS_BACKUP_KEEP}")
+    if oldest.exists():
+        oldest.unlink()
+    for i in range(TASKS_BACKUP_KEEP - 1, 0, -1):
+        src = TASKS_FILE.with_suffix(f".yaml.bak.{i}")
+        dst = TASKS_FILE.with_suffix(f".yaml.bak.{i + 1}")
+        if src.exists():
+            src.rename(dst)
+    if TASKS_BACKUP.exists():
+        TASKS_BACKUP.rename(TASKS_FILE.with_suffix(".yaml.bak.1"))
+
+
 def save_tasks(tasks: list[dict]) -> None:
     with open(TASKS_FILE) as f:
         data = yaml.safe_load(f)
     data["tasks"] = tasks
-    # Backup current file before mutation
+    # Roll existing backups and snapshot current file before mutation.
     if TASKS_FILE.exists():
+        _rotate_task_backups()
         shutil.copy2(TASKS_FILE, TASKS_BACKUP)
     tmp_path = TASKS_FILE.with_suffix(TASKS_FILE.suffix + ".tmp")
     with open(tmp_path, "w") as f:
@@ -169,7 +239,12 @@ def create_task_branch(task_id: str) -> bool:
 
 
 def merge_task_branch(task_id: str, base_branch: str) -> bool:
-    """Merge task branch back to base and delete it. Returns True on success."""
+    """Merge task branch back to base and delete it. Returns True on success.
+
+    On merge failure (e.g. conflict), runs `git merge --abort` so the repo is
+    returned to a clean state. The task branch is left intact for manual
+    resolution.
+    """
     if not _is_git_repo():
         return False
     branch = task_branch_name(task_id)
@@ -180,7 +255,17 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
         _git("checkout", base_branch, check=False)
     result = _git("merge", branch, "--no-edit", check=False)
     if result.returncode != 0:
-        trace_event("git_merge_error", task_id=task_id, extra={"stderr": result.stderr.strip()[:200]})
+        # Abort the in-flight merge so callers can inspect/retry cleanly.
+        _git("merge", "--abort", check=False)
+        trace_event(
+            "git_merge_error",
+            task_id=task_id,
+            extra={
+                "stderr": result.stderr.strip()[:200],
+                "branch": branch,
+                "base": base_branch,
+            },
+        )
         return False
     _git("branch", "-d", branch, check=False)
     trace_event("git_branch_merge", task_id=task_id, extra={"branch": branch, "into": base_branch})
@@ -287,10 +372,27 @@ def write_state(
 
 
 def read_state() -> dict:
+    default = {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
     if not STATE_FILE.exists():
-        return {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
-    data = json.loads(STATE_FILE.read_text())
+        return default
+    try:
+        data = json.loads(STATE_FILE.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        # Corrupt or unreadable state must not wedge the loop; reconverge from defaults.
+        print(
+            f"[roadrunner] state file unreadable ({exc}); falling back to defaults.",
+            file=sys.stderr,
+        )
+        return default
+    if not isinstance(data, dict):
+        print(
+            "[roadrunner] state file is not a JSON object; falling back to defaults.",
+            file=sys.stderr,
+        )
+        return default
     data.setdefault("attempts_per_task", {})
+    data.setdefault("current_task_id", None)
+    data.setdefault("iteration", 0)
     return data
 
 
@@ -310,8 +412,12 @@ def _now() -> str:
 
 def append_changelog(task_id: str, status: str, notes: str = "") -> None:
     entry = f"## {_now()} | {task_id} → {status}\n{notes}\n\n"
-    with open(CHANGELOG, "a") as f:
-        f.write(entry)
+    try:
+        with open(CHANGELOG, "a") as f:
+            f.write(entry)
+    except OSError as exc:
+        # Audit trail must never break the control loop.
+        print(f"[roadrunner] changelog append failed: {exc}", file=sys.stderr)
 
 
 def trace_event(
@@ -337,8 +443,62 @@ def trace_event(
         record["duration_ms"] = round(duration_ms, 1)
     if extra:
         record.update(extra)
-    with open(TRACE_LOG, "a") as f:
-        f.write(json.dumps(record, separators=(",", ":")) + "\n")
+    try:
+        with open(TRACE_LOG, "a") as f:
+            f.write(json.dumps(record, separators=(",", ":")) + "\n")
+    except OSError as exc:
+        # Observability must never break the control loop.
+        print(f"[roadrunner] trace_event failed: {exc}", file=sys.stderr)
+
+
+# ── Log rotation ──────────────────────────────────────────────────────────────
+
+LOG_ROTATE_BYTES = 10 * 1024 * 1024  # rotate when a log file exceeds 10 MB
+LOG_RETAIN_DAYS = 7                  # delete rotated/compressed logs older than this
+
+
+def _rotate_one(path: Path) -> None:
+    """Rotate a single log file by renaming with a UTC timestamp suffix and gzipping."""
+    if not path.exists() or path.stat().st_size < LOG_ROTATE_BYTES:
+        return
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    rotated = path.with_name(f"{path.name}.{stamp}")
+    path.rename(rotated)
+    # Compress the rotated file to save space.
+    gz_path = rotated.with_suffix(rotated.suffix + ".gz")
+    with open(rotated, "rb") as src, gzip.open(gz_path, "wb") as dst:
+        shutil.copyfileobj(src, dst)
+    rotated.unlink()
+
+
+def _prune_old_rotations(directory: Path, stem: str) -> None:
+    """Delete rotated files matching {stem}.* older than LOG_RETAIN_DAYS."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=LOG_RETAIN_DAYS)
+    for p in directory.glob(f"{stem}.*"):
+        # Skip the live log itself (no timestamp suffix) and *.tmp partials.
+        if p.name == stem or p.name.endswith(".tmp"):
+            continue
+        try:
+            mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            continue
+        if mtime < cutoff:
+            try:
+                p.unlink()
+            except OSError as exc:
+                print(f"[roadrunner] prune failed for {p}: {exc}", file=sys.stderr)
+
+
+def rotate_logs() -> None:
+    """Rotate oversized logs and prune old rotations. Called at task boundaries."""
+    try:
+        for path in (TRACE_LOG, CHANGELOG):
+            _rotate_one(path)
+        _prune_old_rotations(LOGS_DIR, TRACE_LOG.name)
+        _prune_old_rotations(LOGS_DIR, CHANGELOG.name)
+    except Exception as exc:
+        # Rotation failures must never break the loop.
+        print(f"[roadrunner] rotate_logs failed: {exc}", file=sys.stderr)
 
 
 def write_work_log(task: dict, validation_results: list[dict], notes: str = "") -> None:
@@ -533,6 +693,7 @@ def cmd_block(args: argparse.Namespace) -> None:
 def cmd_reset(args: argparse.Namespace) -> None:
     write_reset_marker(args.task_id, summary=args.summary or "")
     write_context_snapshot()
+    rotate_logs()
     print(f"Reset marker written for {args.task_id}.")
 
 

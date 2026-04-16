@@ -4,12 +4,18 @@
 # Stop Hook — fires when Claude Code agent finishes responding.
 # Determines whether Claude is allowed to stop or must continue working.
 #
-# Exit behavior:
-#   exit 0          → allow Claude to stop
-#   exit 2          → force Claude to continue (legacy method)
-#   stdout JSON     → structured control (preferred)
-#     {"decision": "block", "reason": "..."}  → continue with reason
-#     {"continue": false, "stopReason": "..."} → hard stop with message
+# Output contract (two shapes for two outcomes — not interchangeable):
+#   {"decision": "block", "reason": "..."}
+#     → Soft block. Claude continues; `reason` is injected as next-turn context.
+#     Used for: resume brief, next-task brief, blocked-task report, done-prompt.
+#
+#   {"continue": false, "stopReason": "..."}
+#     → Hard halt. Claude Code session terminates; `stopReason` shown to user.
+#     Used ONLY for the iteration cap. Overrides any other decision.
+#
+# Exit codes:
+#   exit 0  → JSON on stdout is authoritative (normal case)
+#   exit 2  → legacy force-continue via stderr; prefer JSON output instead
 #
 # CRITICAL: Always check stop_hook_active to prevent infinite loops.
 # ─────────────────────────────────────────────────────────────────────────────

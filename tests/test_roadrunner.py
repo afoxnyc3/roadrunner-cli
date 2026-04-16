@@ -297,6 +297,19 @@ class TestAtomicSave:
         with pytest.raises(ValueError, match="missing required fields"):
             roadrunner.load_tasks()
 
+    def test_rolling_backups_keeps_configured_count(self, tmp_project, monkeypatch):
+        monkeypatch.setattr(roadrunner, "TASKS_BACKUP_KEEP", 3)
+        tasks = roadrunner.load_tasks()
+        # Perform more saves than backups retained; each save rolls .bak → .bak.1 → .bak.2 → .bak.3.
+        for _ in range(6):
+            roadrunner.save_tasks(tasks)
+        assert roadrunner.TASKS_BACKUP.exists()
+        assert roadrunner.TASKS_FILE.with_suffix(".yaml.bak.1").exists()
+        assert roadrunner.TASKS_FILE.with_suffix(".yaml.bak.2").exists()
+        assert roadrunner.TASKS_FILE.with_suffix(".yaml.bak.3").exists()
+        # Must not exceed the configured retention
+        assert not roadrunner.TASKS_FILE.with_suffix(".yaml.bak.4").exists()
+
 
 # ── Run validation ───────────────────────────────────────────────────────────
 
@@ -380,14 +393,18 @@ class TestRunValidation:
 
 class TestCorruptInput:
     def test_load_tasks_invalid_yaml(self, tmp_project):
+        # Parser errors are wrapped in a ValueError with operator guidance
+        # so the loop halts with an actionable message instead of a raw traceback.
         roadrunner.TASKS_FILE.write_text(": [invalid yaml\n  broken:")
-        with pytest.raises(yaml.YAMLError):
+        with pytest.raises(ValueError, match="not valid YAML"):
             roadrunner.load_tasks()
 
-    def test_read_state_invalid_json(self, tmp_project):
+    def test_read_state_invalid_json(self, tmp_project, capsys):
+        # Corrupt state must not wedge the loop; reconverge from defaults.
         roadrunner.STATE_FILE.write_text("{not json!!")
-        with pytest.raises(json.JSONDecodeError):
-            roadrunner.read_state()
+        state = roadrunner.read_state()
+        assert state == {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
+        assert "state file unreadable" in capsys.readouterr().err
 
     def test_load_tasks_empty_yaml(self, tmp_project):
         roadrunner.TASKS_FILE.write_text("")
@@ -572,3 +589,158 @@ class TestBuildTaskBrief:
     def test_no_bare_sentinel_line(self):
         brief = roadrunner._build_task_brief(self.TASK, 1, 50)
         assert not roadrunner.is_completion_signal(brief)
+
+
+# ── Error handling / resilience ──────────────────────────────────────────────
+
+
+class TestErrorHandling:
+    def test_load_tasks_corrupt_yaml_raises_clear_error(self, tmp_project):
+        roadrunner.TASKS_FILE.write_text("tasks:\n  - id: TASK-001\n    status: [broken")
+        with pytest.raises(ValueError, match="not valid YAML"):
+            roadrunner.load_tasks()
+
+    def test_load_tasks_missing_file(self, tmp_project):
+        roadrunner.TASKS_FILE.unlink()
+        with pytest.raises(FileNotFoundError, match="tasks file not found"):
+            roadrunner.load_tasks()
+
+    def test_read_state_corrupt_json_falls_back(self, tmp_project, capsys):
+        roadrunner.STATE_FILE.write_text("{not json")
+        state = roadrunner.read_state()
+        assert state["current_task_id"] is None
+        assert state["iteration"] == 0
+        assert "state file unreadable" in capsys.readouterr().err
+
+    def test_read_state_not_a_dict_falls_back(self, tmp_project, capsys):
+        roadrunner.STATE_FILE.write_text('["not", "a", "dict"]')
+        state = roadrunner.read_state()
+        assert state == {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
+        assert "not a JSON object" in capsys.readouterr().err
+
+    def test_trace_event_logs_stderr_on_write_failure(self, tmp_project, capsys, monkeypatch):
+        missing = tmp_project / "does-not-exist" / "trace.jsonl"
+        monkeypatch.setattr(roadrunner, "TRACE_LOG", missing)
+        roadrunner.trace_event("probe")  # must not raise
+        assert "trace_event failed" in capsys.readouterr().err
+
+    def test_append_changelog_logs_stderr_on_write_failure(self, tmp_project, capsys, monkeypatch):
+        missing = tmp_project / "does-not-exist" / "CHANGELOG.md"
+        monkeypatch.setattr(roadrunner, "CHANGELOG", missing)
+        roadrunner.append_changelog("TASK-001", "done")  # must not raise
+        assert "changelog append failed" in capsys.readouterr().err
+
+
+# ── Log rotation ─────────────────────────────────────────────────────────────
+
+
+class TestLogRotation:
+    def test_rotate_when_over_threshold(self, tmp_project, monkeypatch):
+        monkeypatch.setattr(roadrunner, "LOG_ROTATE_BYTES", 100)
+        roadrunner.TRACE_LOG.write_text("x" * 200)
+        roadrunner.rotate_logs()
+        assert not roadrunner.TRACE_LOG.exists()
+        archives = list(roadrunner.LOGS_DIR.glob("trace.jsonl.*.gz"))
+        assert len(archives) == 1
+
+    def test_no_rotate_when_under_threshold(self, tmp_project, monkeypatch):
+        monkeypatch.setattr(roadrunner, "LOG_ROTATE_BYTES", 10_000)
+        roadrunner.TRACE_LOG.write_text("small")
+        roadrunner.rotate_logs()
+        assert roadrunner.TRACE_LOG.read_text() == "small"
+        assert not list(roadrunner.LOGS_DIR.glob("trace.jsonl.*"))
+
+    def test_prune_old_rotations(self, tmp_project, monkeypatch):
+        import os as _os
+        import time as _time
+
+        monkeypatch.setattr(roadrunner, "LOG_RETAIN_DAYS", 1)
+        old = roadrunner.LOGS_DIR / "trace.jsonl.20200101T000000Z.gz"
+        old.write_text("archived")
+        # Backdate its mtime to 10 days ago
+        ten_days_ago = _time.time() - 10 * 86400
+        _os.utime(old, (ten_days_ago, ten_days_ago))
+
+        recent = roadrunner.LOGS_DIR / "trace.jsonl.20991231T235959Z.gz"
+        recent.write_text("keep me")
+        roadrunner.rotate_logs()
+        assert not old.exists()
+        assert recent.exists()
+
+    def test_rotate_never_raises_on_error(self, tmp_project, monkeypatch):
+        def boom(*a, **kw):
+            raise RuntimeError("disk exploded")
+
+        monkeypatch.setattr(roadrunner, "_rotate_one", boom)
+        roadrunner.rotate_logs()  # must not raise
+
+
+# ── Git branching ────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def tmp_git_project(tmp_project, monkeypatch):
+    """Initialize a git repo inside tmp_project and patch roadrunner.ROOT to it."""
+    root = tmp_project
+    monkeypatch.setattr(roadrunner, "ROOT", root)
+    # Isolate from the developer's global git config (GPG signing, default branch, etc.)
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=root, check=True)
+    for key, value in (
+        ("user.email", "test@example.com"),
+        ("user.name", "Test"),
+        ("commit.gpgsign", "false"),
+        ("tag.gpgsign", "false"),
+        ("gpg.format", "openpgp"),
+    ):
+        subprocess.run(["git", "config", key, value], cwd=root, check=True)
+    seed = root / "seed.txt"
+    seed.write_text("initial\n")
+    subprocess.run(["git", "add", "seed.txt"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "initial"], cwd=root, check=True)
+    return root
+
+
+class TestGitBranching:
+    def test_create_and_merge_clean(self, tmp_git_project):
+        root = tmp_git_project
+        assert roadrunner.create_task_branch("TASK-099") is True
+        # Make a change on the task branch
+        (root / "work.txt").write_text("work\n")
+        subprocess.run(["git", "add", "work.txt"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "work"], cwd=root, check=True)
+        assert roadrunner.merge_task_branch("TASK-099", "main") is True
+        # Branch should be deleted after successful merge
+        exists = subprocess.run(
+            ["git", "rev-parse", "--verify", "roadrunner/TASK-099"],
+            cwd=root, capture_output=True,
+        ).returncode
+        assert exists != 0
+
+    def test_merge_conflict_reports_failure(self, tmp_git_project):
+        root = tmp_git_project
+        # Create task branch and diverge the target file
+        assert roadrunner.create_task_branch("TASK-100") is True
+        (root / "shared.txt").write_text("from task branch\n")
+        subprocess.run(["git", "add", "shared.txt"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "task branch change"], cwd=root, check=True)
+
+        # Switch back to main and make a conflicting change
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=root, check=True)
+        (root / "shared.txt").write_text("from main\n")
+        subprocess.run(["git", "add", "shared.txt"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "main change"], cwd=root, check=True)
+
+        # Merge should fail cleanly and leave the branch intact for manual resolution
+        assert roadrunner.merge_task_branch("TASK-100", "main") is False
+        exists = subprocess.run(
+            ["git", "rev-parse", "--verify", "roadrunner/TASK-100"],
+            cwd=root, capture_output=True,
+        ).returncode
+        assert exists == 0
+        # The git_merge_error event should be in the trace log
+        trace_text = roadrunner.TRACE_LOG.read_text() if roadrunner.TRACE_LOG.exists() else ""
+        assert "git_merge_error" in trace_text
+
+    def test_merge_missing_branch_noop(self, tmp_git_project):
+        # No task branch exists — merge_task_branch should succeed trivially
+        assert roadrunner.merge_task_branch("TASK-DOESNOTEXIST", "main") is True
