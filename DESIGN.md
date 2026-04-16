@@ -12,13 +12,16 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 ┌───────────────────────────────────────────────────────────┐
 │                    Claude Code Session                    │
 │                                                           │
-│  CLAUDE.md         Hook fires         Hook fires         │
-│  (agent brief)         │                  │              │
+│  SessionStart Hook     Hook fires         Hook fires     │
+│  (inject snapshot)         │                  │          │
 │       │            Stop Hook         PreCompact          │
 │       ▼                │              Hook               │
-│  roadrunner.py next    │                  │              │
-│  roadrunner.py start   │                  ▼              │
-│  <implement task>      │          write_context_snapshot │
+│  CLAUDE.md (brief)     │                  │              │
+│       │                │                  ▼              │
+│       ▼                │          write_context_snapshot │
+│  roadrunner.py next    │                                 │
+│  roadrunner.py start   │                                 │
+│  <implement task>      │                                 │
 │  roadrunner.py validate│                                 │
 │  roadrunner.py complete│                                 │
 │       │                │                                 │
@@ -161,7 +164,7 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 
 ### 2.4 PostToolUse Hook (`hooks/post_write_hook.sh`)
 
-**Fires when:** Claude uses Write, Edit, or MultiEdit tools (async).
+**Fires when:** Claude uses Write or Edit tools (async). Matcher: `"Write|Edit"`.
 
 **Input (stdin):** JSON object with `tool_input.file_path`.
 
@@ -332,10 +335,9 @@ python3 roadrunner.py health
 
 After the first real Claude Code session with hooks active:
 
-1. Check `logs/.taskcompleted_payloads.log` for the actual `TaskCompleted` payload schema.
-2. Confirm the `TASK-###` regex extraction worked (or adjust field probing if needed).
-3. Remove the debug log line from `hooks/task_completed_hook.sh` once confirmed.
-4. Review `logs/trace.jsonl` to verify structured logging is capturing events.
+1. Review `logs/trace.jsonl` to verify structured logging is capturing events.
+2. Check that the SessionStart hook injected roadmap state (look for "Roadmap snapshot" in the session transcript).
+3. Confirm `.context_snapshot.json` was written by the PreCompact hook (if compaction occurred).
 
 ---
 

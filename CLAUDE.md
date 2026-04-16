@@ -62,7 +62,8 @@ Not when you think it looks right. Not when the code exists. When validation pas
 - Work on exactly one task per cycle
 - Do not reference prior task details unless directly relevant to current task
 - After each `complete`, treat the prior task as closed
-- The `.context_snapshot.json` and `.roadmap_state.json` are your memory
+- On session start, the SessionStart hook injects a roadmap snapshot automatically
+- The `.context_snapshot.json` and `.roadmap_state.json` are your memory — read them if the snapshot seems stale
 
 ---
 
