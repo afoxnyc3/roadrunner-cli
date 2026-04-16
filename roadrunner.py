@@ -34,6 +34,7 @@ LOGS_DIR.mkdir(exist_ok=True)
 
 
 REQUIRED_TASK_FIELDS = {"id", "status", "title"}
+TASK_ID_RE = re.compile(r"^[A-Z]+-\d+$")
 
 
 def validate_task_schema(task: dict, index: int) -> None:
@@ -43,17 +44,26 @@ def validate_task_schema(task: dict, index: int) -> None:
         raise ValueError(
             f"Task {task_id} is missing required fields: {', '.join(sorted(missing))}"
         )
+    task_id = task.get("id", "")
+    if not TASK_ID_RE.match(str(task_id)):
+        raise ValueError(
+            f"Task {task_id!r} has invalid ID format. "
+            f"Must match [A-Z]+-\\d+ (e.g., TASK-001)"
+        )
     if not isinstance(task.get("validation_commands", []), list):
         raise ValueError(
             f"Task {task['id']}: validation_commands must be a list"
         )
     if not isinstance(task.get("depends_on", []), list):
         raise ValueError(f"Task {task['id']}: depends_on must be a list")
+    timeout = task.get("validation_timeout")
+    if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
+        raise ValueError(f"Task {task['id']}: validation_timeout must be a positive number")
 
 
 def load_tasks() -> list[dict]:
     with open(TASKS_FILE) as f:
-        data = yaml.safe_load(f)
+        data = yaml.safe_load(f) or {}
     tasks = data.get("tasks", [])
     for i, task in enumerate(tasks):
         validate_task_schema(task, i)
@@ -179,6 +189,8 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
 
 # ── Validation ────────────────────────────────────────────────────────────────
 
+DEFAULT_VALIDATION_TIMEOUT = 300  # seconds
+
 
 def run_validation(task: dict) -> tuple[bool, list[dict]]:
     """Run all validation_commands for a task. Returns (passed, results)."""
@@ -191,35 +203,49 @@ def run_validation(task: dict) -> tuple[bool, list[dict]]:
     results = []
     all_passed = True
     state = read_state()
+    timeout = task.get("validation_timeout", DEFAULT_VALIDATION_TIMEOUT)
 
     for cmd in commands:
         t0 = time.monotonic()
-        result = subprocess.run(
-            cmd,
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=ROOT,
-        )
+        timed_out = False
+        try:
+            result = subprocess.run(
+                cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                cwd=ROOT,
+                timeout=timeout,
+            )
+            passed = result.returncode == 0
+            stdout = result.stdout.strip()[:500]
+            stderr = result.stderr.strip()[:500]
+            returncode = result.returncode
+        except subprocess.TimeoutExpired as exc:
+            passed = False
+            timed_out = True
+            stdout = (exc.stdout or b"").decode(errors="replace").strip()[:500]
+            stderr = (exc.stderr or b"").decode(errors="replace").strip()[:500]
+            returncode = -1
         elapsed = (time.monotonic() - t0) * 1000
-        passed = result.returncode == 0
         if not passed:
             all_passed = False
-        results.append(
-            {
-                "command": cmd,
-                "passed": passed,
-                "returncode": result.returncode,
-                "stdout": result.stdout.strip()[:500],
-                "stderr": result.stderr.strip()[:500],
-            }
-        )
+        entry = {
+            "command": cmd,
+            "passed": passed,
+            "returncode": returncode,
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+        if timed_out:
+            entry["timed_out"] = True
+        results.append(entry)
         trace_event(
             "validation_command",
             task_id=task["id"],
             iteration=state.get("iteration"),
             command=cmd,
-            exit_code=result.returncode,
+            exit_code=returncode,
             duration_ms=elapsed,
         )
 
@@ -376,7 +402,7 @@ def write_context_snapshot() -> None:
 # ── CLI commands ──────────────────────────────────────────────────────────────
 
 
-def cmd_status(args) -> None:
+def cmd_status(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     print(f"\n{'ID':<14} {'STATUS':<12} {'TITLE'}")
     print("─" * 60)
@@ -389,7 +415,7 @@ def cmd_status(args) -> None:
     print(f"\nNext eligible: {next_t['id'] if next_t else 'None'}")
 
 
-def cmd_next(args) -> None:
+def cmd_next(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     task = next_eligible_task(tasks)
     if not task:
@@ -402,7 +428,7 @@ def cmd_next(args) -> None:
         print(f"  - {ac}")
 
 
-def cmd_start(args) -> None:
+def cmd_start(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     task = get_task(tasks, args.task_id)
     if not task:
@@ -437,7 +463,7 @@ def cmd_start(args) -> None:
     print(f"Started {args.task_id}. Iteration {state.get('iteration', 0)}.{branch_msg}")
 
 
-def cmd_validate(args) -> None:
+def cmd_validate(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     task = get_task(tasks, args.task_id)
     if not task:
@@ -454,7 +480,7 @@ def cmd_validate(args) -> None:
     sys.exit(0 if passed else 1)
 
 
-def cmd_complete(args) -> None:
+def cmd_complete(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     task = get_task(tasks, args.task_id)
     if not task:
@@ -485,7 +511,7 @@ def cmd_complete(args) -> None:
     print(f"✅ {args.task_id} marked done.")
 
 
-def cmd_block(args) -> None:
+def cmd_block(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     task = get_task(tasks, args.task_id)
     if not task:
@@ -504,13 +530,13 @@ def cmd_block(args) -> None:
     print(f"🚫 {args.task_id} marked blocked.")
 
 
-def cmd_reset(args) -> None:
+def cmd_reset(args: argparse.Namespace) -> None:
     write_reset_marker(args.task_id, summary=args.summary or "")
     write_context_snapshot()
     print(f"Reset marker written for {args.task_id}.")
 
 
-def cmd_health(args) -> None:
+def cmd_health(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     eligible = [t for t in tasks if is_eligible(t, tasks)]
     done = [t for t in tasks if t.get("status") == "done"]
@@ -520,7 +546,7 @@ def cmd_health(args) -> None:
     )
 
 
-def cmd_check_stop(args) -> None:
+def cmd_check_stop(args: argparse.Namespace) -> None:
     """
     Called by Stop hook. Outputs JSON to control whether Claude Code halts.
     Reads stop_hook_active from stdin to prevent infinite loops.
@@ -629,7 +655,7 @@ def cmd_check_stop(args) -> None:
     sys.exit(0)
 
 
-def cmd_snapshot(args) -> None:
+def cmd_snapshot(args: argparse.Namespace) -> None:
     write_context_snapshot()
 
 

@@ -270,9 +270,9 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 
 ---
 
-### 🔶 OPEN: No automated tests for hooks (bash scripts)
+### ✅ FIXED: No automated tests for hooks (was OPEN)
 
-The pytest suite covers `roadrunner.py` controller logic (48 tests). The bash hooks are tested manually only. Hook-level integration tests (mocked Claude Code payloads piped through bash scripts) would close this gap.
+Hook integration tests added in `tests/test_hooks.py`. Tests pipe mock JSON payloads through actual bash scripts via `subprocess.run` and verify exit codes, stdout JSON, and stderr feedback. Covers Stop, SessionStart, PreCompact, and PostToolUse hooks including a shell injection safety canary.
 
 ---
 
@@ -282,14 +282,39 @@ File locking, concurrent invocations, and multi-project parallel runs are not su
 
 ---
 
+### ✅ FIXED: Validation commands had no timeout (was OPEN)
+
+**Original risk:** A validation command that hangs (network wait, deadlock) blocks the entire loop indefinitely with no recovery.
+
+**Fix:** `run_validation()` now passes `timeout` to `subprocess.run()` (default 300s). Per-task override via `validation_timeout` field in `tasks.yaml`. `TimeoutExpired` is caught and reported as a validation failure with `timed_out: True` in results (ADR-008).
+
+---
+
+### ✅ FIXED: No task ID sanitization (was OPEN)
+
+**Original risk:** Task IDs flowed unsanitized into file paths (`.reset_{task_id}`, `logs/{task_id}.md`) and git branch names. A task ID containing `../` could write outside the project directory.
+
+**Fix:** `validate_task_schema()` now enforces `^[A-Z]+-\d+$` format via regex. Invalid IDs are rejected at load time (ADR-008).
+
+---
+
+### ✅ FIXED: Non-atomic state file writes (was OPEN)
+
+**Original risk:** `write_state()` used `Path.write_text()` directly. A crash during state write could corrupt `.roadmap_state.json`.
+
+**Fix:** `write_state()` now uses the same temp-file + fsync + `os.replace()` pattern as `save_tasks()` (ADR-004 updated).
+
+---
+
 ### Trust Boundary: tasks.yaml and validation_commands
 
-`tasks.yaml` is a **trust boundary**. The `validation_commands` list is executed via `subprocess.run(cmd, shell=True)` — any command defined there runs with the operator's full privileges. This is by design for a single-operator tool: the operator authors the tasks, the operator trusts the commands.
+`tasks.yaml` is a **trust boundary**. The `validation_commands` list is executed via `subprocess.run(cmd, shell=True)` — any command defined there runs with the operator's full privileges. This is by design for a single-operator tool: the operator authors the tasks, the operator trusts the commands. Validation commands are subject to a configurable timeout (default 300s) to prevent hanging commands from blocking the loop indefinitely.
 
 **Implications:**
 
 - A malicious or careless `validation_commands` entry (e.g., `rm -rf /`) will execute without sandboxing.
 - If this project is ever shared or used in a multi-tenant context, `tasks.yaml` must be treated as executable configuration — review it the way you'd review a Makefile or CI pipeline.
+- Task IDs are validated against `^[A-Z]+-\d+$` to prevent path traversal. This check runs on every `load_tasks()` call.
 - The same applies to `acceptance_criteria` or `goal` fields: they don't execute, but they shape Claude's behavior via the task brief. Prompt injection through task definitions is a theoretical concern in shared environments.
 
 **Single-operator assumption:** Roadrunner assumes the person writing `tasks.yaml` is the same person running it. No access control, no sandboxing, no approval flow. This is appropriate for local development and overnight single-machine runs. It is not appropriate for shared infrastructure.
@@ -376,6 +401,7 @@ When roadrunner stabilizes, package as `roadrunner-cli` on PyPI. Target projects
 | [ADR-005](docs/adr/005-absolute-hook-paths.md) | Absolute Hook Paths via $CLAUDE_PROJECT_DIR | Accepted |
 | [ADR-006](docs/adr/006-structured-trace-logging.md) | Structured JSON Trace Logging | Accepted |
 | [ADR-007](docs/adr/007-dead-hook-cleanup.md) | Dead Hook Cleanup (TaskCompleted, MultiEdit, PreCompact additionalContext) | Accepted |
+| [ADR-008](docs/adr/008-validation-timeout-and-task-id-sanitization.md) | Validation Timeout and Task ID Sanitization | Accepted |
 
 ---
 

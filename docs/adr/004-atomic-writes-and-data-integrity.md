@@ -25,4 +25,4 @@ os.replace(tmp_path, TASKS_FILE)
 
 - **Fixed:** SIGINT mid-write can no longer corrupt the task queue.
 - **Trade-off:** Slightly more disk I/O (write + rename vs. write in place). Negligible for a file under 10KB.
-- **Not addressed:** `.roadmap_state.json` still uses `write_text()` directly. Acceptable because state is reconstructible (re-read tasks.yaml + infer iteration), whereas tasks.yaml is the source of truth and not reconstructible.
+- **Update (2026-04-16):** `write_state()` now also uses the temp-file + fsync + `os.replace()` pattern, matching `save_tasks()`. Both state files are now crash-safe.

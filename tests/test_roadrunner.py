@@ -1,6 +1,7 @@
 """Tests for roadrunner.py controller logic."""
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
@@ -92,7 +93,7 @@ def tmp_project(tmp_path):
 
 class TestValidateTaskSchema:
     def test_valid_task(self):
-        task = {"id": "T-1", "status": "todo", "title": "Test"}
+        task = {"id": "TST-001", "status": "todo", "title": "Test"}
         roadrunner.validate_task_schema(task, 0)
 
     def test_missing_id(self):
@@ -101,16 +102,50 @@ class TestValidateTaskSchema:
 
     def test_missing_title_and_status(self):
         with pytest.raises(ValueError, match="missing required fields"):
-            roadrunner.validate_task_schema({"id": "T-1"}, 0)
+            roadrunner.validate_task_schema({"id": "TST-001"}, 0)
 
     def test_validation_commands_not_list(self):
-        task = {"id": "T-1", "status": "todo", "title": "T", "validation_commands": "bad"}
+        task = {"id": "TST-001", "status": "todo", "title": "T", "validation_commands": "bad"}
         with pytest.raises(ValueError, match="validation_commands must be a list"):
             roadrunner.validate_task_schema(task, 0)
 
     def test_depends_on_not_list(self):
-        task = {"id": "T-1", "status": "todo", "title": "T", "depends_on": "TASK-001"}
+        task = {"id": "TST-001", "status": "todo", "title": "T", "depends_on": "TASK-001"}
         with pytest.raises(ValueError, match="depends_on must be a list"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_bad_id_path_traversal(self):
+        task = {"id": "../etc", "status": "todo", "title": "T"}
+        with pytest.raises(ValueError, match="invalid ID format"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_bad_id_empty(self):
+        task = {"id": "", "status": "todo", "title": "T"}
+        with pytest.raises(ValueError, match="invalid ID format"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_bad_id_spaces(self):
+        task = {"id": "has spaces", "status": "todo", "title": "T"}
+        with pytest.raises(ValueError, match="invalid ID format"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_bad_id_lowercase(self):
+        task = {"id": "task-001", "status": "todo", "title": "T"}
+        with pytest.raises(ValueError, match="invalid ID format"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_good_id_format(self):
+        task = {"id": "TASK-001", "status": "todo", "title": "T"}
+        roadrunner.validate_task_schema(task, 0)
+
+    def test_bad_validation_timeout(self):
+        task = {"id": "TST-001", "status": "todo", "title": "T", "validation_timeout": "fast"}
+        with pytest.raises(ValueError, match="validation_timeout must be a positive number"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_negative_validation_timeout(self):
+        task = {"id": "TST-001", "status": "todo", "title": "T", "validation_timeout": -5}
+        with pytest.raises(ValueError, match="validation_timeout must be a positive number"):
             roadrunner.validate_task_schema(task, 0)
 
 
@@ -155,6 +190,16 @@ class TestEligibility:
     def test_no_active_task(self):
         tasks = [{"id": "X", "status": "done", "title": "X", "depends_on": []}]
         assert roadrunner.active_task(tasks) is None
+
+    def test_circular_deps_never_eligible(self):
+        """A→B→A cycle: neither task becomes eligible since deps are never 'done'."""
+        tasks = [
+            {"id": "CYC-001", "status": "todo", "title": "A", "depends_on": ["CYC-002"]},
+            {"id": "CYC-002", "status": "todo", "title": "B", "depends_on": ["CYC-001"]},
+        ]
+        assert not roadrunner.is_eligible(tasks[0], tasks)
+        assert not roadrunner.is_eligible(tasks[1], tasks)
+        assert roadrunner.next_eligible_task(tasks) is None
 
 
 # ── Completion signal ────────────────────────────────────────────────────────
@@ -214,14 +259,14 @@ class TestState:
         assert state["attempts_per_task"]["TASK-002"] == 2
 
     def test_increment_attempts(self):
-        state = {"attempts_per_task": {"T-1": 2}}
-        result = roadrunner.increment_attempts(state, "T-1")
+        state = {"attempts_per_task": {"TST-001": 2}}
+        result = roadrunner.increment_attempts(state, "TST-001")
         assert result == 3
-        assert state["attempts_per_task"]["T-1"] == 3
+        assert state["attempts_per_task"]["TST-001"] == 3
 
     def test_increment_new_task(self):
         state = {"attempts_per_task": {}}
-        result = roadrunner.increment_attempts(state, "T-1")
+        result = roadrunner.increment_attempts(state, "TST-001")
         assert result == 1
 
 
@@ -287,6 +332,67 @@ class TestRunValidation:
         events = [json.loads(line) for line in trace_lines]
         assert any(e["event"] == "validation_command" for e in events)
         assert any(e["event"] == "validation_complete" for e in events)
+
+    def test_timeout_treated_as_failure(self, tmp_project):
+        task = {"id": "T", "validation_commands": ["slow_cmd"], "validation_timeout": 5}
+        roadrunner.write_state(None, 1)
+        exc = subprocess.TimeoutExpired("slow_cmd", 5)
+        exc.stdout = b"partial out"
+        exc.stderr = b"partial err"
+        with patch("roadrunner.subprocess.run", side_effect=exc):
+            passed, results = roadrunner.run_validation(task)
+        assert not passed
+        assert len(results) == 1
+        assert results[0]["returncode"] == -1
+        assert results[0]["timed_out"] is True
+        assert results[0]["passed"] is False
+        assert results[0]["stdout"] == "partial out"
+        assert results[0]["stderr"] == "partial err"
+
+    def test_timeout_with_none_output(self, tmp_project):
+        """TimeoutExpired with stdout=None should not crash."""
+        task = {"id": "T", "validation_commands": ["hang"], "validation_timeout": 1}
+        roadrunner.write_state(None, 1)
+        exc = subprocess.TimeoutExpired("hang", 1)
+        exc.stdout = None
+        exc.stderr = None
+        with patch("roadrunner.subprocess.run", side_effect=exc):
+            passed, results = roadrunner.run_validation(task)
+        assert not passed
+        assert results[0]["stdout"] == ""
+        assert results[0]["stderr"] == ""
+
+    def test_timeout_uses_task_value(self, tmp_project):
+        """validation_timeout from task dict is passed to subprocess.run."""
+        task = {"id": "T", "validation_commands": ["true"], "validation_timeout": 42}
+        roadrunner.write_state(None, 1)
+        with patch("roadrunner.subprocess.run") as mock_run:
+            mock_run.return_value = subprocess.CompletedProcess("true", 0, stdout="", stderr="")
+            roadrunner.run_validation(task)
+        mock_run.assert_called_once_with(
+            "true", shell=True, capture_output=True, text=True,
+            cwd=roadrunner.ROOT, timeout=42,
+        )
+
+
+# ── Corrupt input ───────────────────────────────────────────────────────────
+
+
+class TestCorruptInput:
+    def test_load_tasks_invalid_yaml(self, tmp_project):
+        roadrunner.TASKS_FILE.write_text(": [invalid yaml\n  broken:")
+        with pytest.raises(yaml.YAMLError):
+            roadrunner.load_tasks()
+
+    def test_read_state_invalid_json(self, tmp_project):
+        roadrunner.STATE_FILE.write_text("{not json!!")
+        with pytest.raises(json.JSONDecodeError):
+            roadrunner.read_state()
+
+    def test_load_tasks_empty_yaml(self, tmp_project):
+        roadrunner.TASKS_FILE.write_text("")
+        tasks = roadrunner.load_tasks()
+        assert tasks == []
 
 
 # ── check-stop logic ────────────────────────────────────────────────────────
@@ -421,12 +527,12 @@ class TestCheckStop:
 
 class TestTraceLogging:
     def test_trace_event_writes_jsonl(self, tmp_project):
-        roadrunner.trace_event("test_event", task_id="T-1", iteration=1)
+        roadrunner.trace_event("test_event", task_id="TST-001", iteration=1)
         lines = roadrunner.TRACE_LOG.read_text().strip().splitlines()
         assert len(lines) == 1
         record = json.loads(lines[0])
         assert record["event"] == "test_event"
-        assert record["task_id"] == "T-1"
+        assert record["task_id"] == "TST-001"
         assert record["iteration"] == 1
 
     def test_trace_with_extra(self, tmp_project):

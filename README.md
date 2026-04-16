@@ -79,6 +79,7 @@ python3 roadrunner.py snapshot         # write context snapshot manually
   validation_commands:
     - "pytest tests/test_feature.py"
     - "ruff check src/"
+  validation_timeout: 300          # seconds per command (default: 300)
   documentation_targets:
     - "CHANGELOG.md"
     - "logs/TASK-001.md"
@@ -87,7 +88,7 @@ python3 roadrunner.py snapshot         # write context snapshot manually
   notes: "Operator annotations"
 ```
 
-Tasks are schema-validated on load — missing `id`, `status`, or `title` fields raise an error immediately.
+Tasks are schema-validated on load — missing `id`, `status`, or `title` fields raise an error immediately. Task IDs must match `[A-Z]+-\d+` (e.g., `TASK-001`).
 
 ## How the Stop Hook Works
 
@@ -124,12 +125,15 @@ Every task produces:
 ## Tests
 
 ```bash
-python3 -m pytest tests/test_roadrunner.py -v
+python3 -m pytest tests/ -v
 ```
 
-48 tests covering schema validation, eligibility, completion signal detection,
-state management, atomic saves, validation execution, check-stop logic
-(including auto-block and iteration cap), trace logging, and task brief generation.
+73 tests across two files covering schema validation (including task ID format
+and validation timeout), eligibility (including circular dependency behavior),
+completion signal detection, state management, atomic saves, validation execution
+(including subprocess timeout handling), check-stop logic (including auto-block
+and iteration cap), trace logging, task brief generation, corrupt input handling,
+and hook integration tests (Stop, SessionStart, PreCompact, PostToolUse).
 
 ## Using in Another Project
 

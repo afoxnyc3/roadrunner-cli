@@ -1,3 +1,13 @@
+## 2026-04-16 | ALL → architecture-review-findings
+Resolved all open findings from the 2026-04-15 architecture review (ADR-008):
+
+- **Subprocess timeout:** `run_validation()` now enforces a configurable timeout (default 300s). `TimeoutExpired` caught and reported as failure with `timed_out: True`.
+- **Task ID sanitization:** `validate_task_schema()` enforces `^[A-Z]+-\d+$` format, preventing path traversal via `.reset_{task_id}` and `logs/{task_id}.md`.
+- **Validation timeout schema check:** Rejects non-positive or non-numeric `validation_timeout` values at load time.
+- **Empty YAML guard:** `load_tasks()` handles `None` from `yaml.safe_load()` on empty files.
+- **Type hints:** All 10 `cmd_*` functions annotated with `args: argparse.Namespace`.
+- **14 new tests:** Timeout handling, task ID validation, corrupt input, circular dependencies. Test count: 59 → 73.
+
 ## 2026-04-16T02:00:00.000000+00:00 | ALL → dead-hook-cleanup
 Verified 3 findings against official Claude Code hooks docs (ADR-007):
 
@@ -54,5 +64,17 @@ Roadmap finished — ROADMAP_COMPLETE signal received.
 Roadmap finished — ROADMAP_COMPLETE signal received.
 
 ## 2026-04-16T03:05:06.273713+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-16T13:02:54.429214+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-16T13:13:07.456711+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-16T13:14:16.154402+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-16T15:13:02.898436+00:00 | ALL → complete
 Roadmap finished — ROADMAP_COMPLETE signal received.
 
