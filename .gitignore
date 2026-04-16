@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Environment
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Roadrunner runtime state (session-local, reconstructible)
+.roadmap_state.json
+.roadmap_state.json.tmp
+.context_snapshot.json
+.reset_TASK-*
+logs/trace.jsonl
+tasks/tasks.yaml.bak
+tasks/tasks.yaml.tmp
+
+# OS
+.DS_Store

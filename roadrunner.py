@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ LOGS_DIR = ROOT / "logs"
 CHANGELOG = LOGS_DIR / "CHANGELOG.md"
 STATE_FILE = ROOT / ".roadmap_state.json"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
+TASKS_BACKUP = TASKS_FILE.with_suffix(".yaml.bak")
 LOGS_DIR.mkdir(exist_ok=True)
 
 # ── YAML helpers ─────────────────────────────────────────────────────────────
@@ -62,6 +64,9 @@ def save_tasks(tasks: list[dict]) -> None:
     with open(TASKS_FILE) as f:
         data = yaml.safe_load(f)
     data["tasks"] = tasks
+    # Backup current file before mutation
+    if TASKS_FILE.exists():
+        shutil.copy2(TASKS_FILE, TASKS_BACKUP)
     tmp_path = TASKS_FILE.with_suffix(TASKS_FILE.suffix + ".tmp")
     with open(tmp_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
@@ -106,6 +111,70 @@ def is_completion_signal(last_msg: str) -> bool:
         if line.strip():
             return bool(ROADMAP_COMPLETE_RE.match(line))
     return False
+
+
+# ── Git helpers (partial-work recovery) ──────────────────────────────────────
+
+
+def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", *args],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        check=check,
+    )
+
+
+def _is_git_repo() -> bool:
+    return _git("rev-parse", "--is-inside-work-tree", check=False).returncode == 0
+
+
+def _current_branch() -> str | None:
+    result = _git("rev-parse", "--abbrev-ref", "HEAD", check=False)
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _branch_exists(branch: str) -> bool:
+    return _git("rev-parse", "--verify", branch, check=False).returncode == 0
+
+
+def task_branch_name(task_id: str) -> str:
+    return f"roadrunner/{task_id}"
+
+
+def create_task_branch(task_id: str) -> bool:
+    """Create a task branch from current HEAD. Returns True if created, False if git unavailable."""
+    if not _is_git_repo():
+        return False
+    branch = task_branch_name(task_id)
+    if _branch_exists(branch):
+        return True
+    result = _git("checkout", "-b", branch, check=False)
+    if result.returncode != 0:
+        trace_event("git_branch_error", task_id=task_id, extra={"stderr": result.stderr.strip()[:200]})
+        return False
+    trace_event("git_branch_create", task_id=task_id, extra={"branch": branch})
+    return True
+
+
+def merge_task_branch(task_id: str, base_branch: str) -> bool:
+    """Merge task branch back to base and delete it. Returns True on success."""
+    if not _is_git_repo():
+        return False
+    branch = task_branch_name(task_id)
+    if not _branch_exists(branch):
+        return True
+    current = _current_branch()
+    if current == branch:
+        _git("checkout", base_branch, check=False)
+    result = _git("merge", branch, "--no-edit", check=False)
+    if result.returncode != 0:
+        trace_event("git_merge_error", task_id=task_id, extra={"stderr": result.stderr.strip()[:200]})
+        return False
+    _git("branch", "-d", branch, check=False)
+    trace_event("git_branch_merge", task_id=task_id, extra={"branch": branch, "into": base_branch})
+    return True
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
@@ -173,6 +242,7 @@ def write_state(
     current_task_id: str | None,
     iteration: int,
     attempts: dict | None = None,
+    extra: dict | None = None,
 ) -> None:
     state = {
         "current_task_id": current_task_id,
@@ -180,7 +250,14 @@ def write_state(
         "attempts_per_task": attempts or {},
         "updated_at": _now(),
     }
-    STATE_FILE.write_text(json.dumps(state, indent=2))
+    if extra:
+        state.update(extra)
+    tmp_path = STATE_FILE.with_suffix(".json.tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(state, f, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, STATE_FILE)
 
 
 def read_state() -> dict:
@@ -338,12 +415,26 @@ def cmd_start(args) -> None:
         sys.exit(1)
 
     state = read_state()
+    # Record base branch before creating task branch
+    base_branch = _current_branch() or "main"
     task["status"] = "in_progress"
     save_tasks(tasks)
-    write_state(args.task_id, state.get("iteration", 0), state.get("attempts_per_task"))
+    write_state(
+        args.task_id,
+        state.get("iteration", 0),
+        state.get("attempts_per_task"),
+        extra={"base_branch": base_branch},
+    )
     append_changelog(args.task_id, "in_progress")
-    trace_event("task_start", task_id=args.task_id, iteration=state.get("iteration", 0))
-    print(f"Started {args.task_id}. Iteration {state.get('iteration', 0)}.")
+    branched = create_task_branch(args.task_id)
+    trace_event(
+        "task_start",
+        task_id=args.task_id,
+        iteration=state.get("iteration", 0),
+        extra={"base_branch": base_branch, "branched": branched},
+    )
+    branch_msg = f" (branch: {task_branch_name(args.task_id)})" if branched else ""
+    print(f"Started {args.task_id}. Iteration {state.get('iteration', 0)}.{branch_msg}")
 
 
 def cmd_validate(args) -> None:
@@ -382,7 +473,15 @@ def cmd_complete(args) -> None:
     append_changelog(args.task_id, "done", notes=args.notes or "")
     write_reset_marker(args.task_id, summary=args.notes or "Completed.")
     state = read_state()
-    trace_event("task_complete", task_id=args.task_id, iteration=state.get("iteration"))
+    # Merge task branch back to base if it exists
+    base_branch = state.get("base_branch", "main")
+    merged = merge_task_branch(args.task_id, base_branch)
+    trace_event(
+        "task_complete",
+        task_id=args.task_id,
+        iteration=state.get("iteration"),
+        extra={"merged": merged},
+    )
     print(f"✅ {args.task_id} marked done.")
 
 

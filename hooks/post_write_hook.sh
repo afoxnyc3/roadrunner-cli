@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # hooks/post_write_hook.sh
 # ─────────────────────────────────────────────────────────────────────────────
-# PostToolUse (Write|Edit|MultiEdit) — runs async after every file write.
-# Runs ruff on Python files. Runs yamllint on YAML files.
+# PostToolUse (Write|Edit) — runs async after every file write.
+# Runs ruff on Python files. Runs yaml parse check on YAML files.
 # Async: Claude continues immediately; output injected on next turn.
 # ─────────────────────────────────────────────────────────────────────────────
 
