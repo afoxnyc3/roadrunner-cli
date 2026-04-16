@@ -102,26 +102,32 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 
 ---
 
-### 2.2 TaskCompleted Hook (`hooks/task_completed_hook.sh`)
+### 2.2 SessionStart Hook (`hooks/session_start_hook.sh`)
 
-**Fires when:** Claude Code agent marks a task as completed.
+**Fires when:** Claude Code session begins or resumes (including after compaction restarts).
 
-**Input (stdin):** JSON object from Claude Code runtime. Exact payload schema depends on Claude Code version.
+**Input (stdin):** JSON object from Claude Code runtime (common fields only).
 
-**Output:** None required. Feedback goes to stderr on failure.
+**Output (stdout):** JSON with `additionalContext` containing roadmap state summary (if `.context_snapshot.json` exists).
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "SessionStart",
+    "additionalContext": "Roadmap snapshot: Current task: TASK-003 | Iteration: 7 | Status: TASK-001=done, TASK-002=done, TASK-003=in_progress"
+  }
+}
+```
 
 **Exit codes:**
-- `exit 0` — allow completion
-- `exit 2` — block completion; stderr fed back to model
+- `exit 0` always — informational, never blocks.
 
 **Logic:**
-1. Log raw payload to `logs/.taskcompleted_payloads.log` (temporary, for schema discovery).
-2. Extract a `TASK-###` roadmap ID by scanning common fields (`task_id`, `taskId`, `title`, `content`, nested `tool_input`), then falling back to regex scan of the full payload.
-3. If no roadmap ID found, pass through (not a managed task).
-4. Run `roadrunner.py validate <task_id>`. If exit != 0, echo error to stderr and exit 2.
-5. On pass, exit 0.
+1. Check if `.context_snapshot.json` exists. If not, exit 0 silently.
+2. Parse snapshot, build a summary string from `current_task`, `next_eligible`, `iteration`, and `status_summary`.
+3. Emit JSON with `additionalContext` so Claude starts the session with roadmap awareness.
 
-**Note on payload format:** The hook uses a broad regex-based approach (`TASK-\d{3,}`) to extract roadmap task IDs from any field. This makes it resilient to payload schema changes. The debug log should be removed once the schema is confirmed from a live run.
+**Note:** `additionalContext` is a supported output field for `SessionStart` hooks per Claude Code docs. This replaces the previous approach of emitting `additionalContext` from the PreCompact hook (which does not support that field).
 
 ---
 
@@ -129,17 +135,11 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 
 **Fires when:** Claude Code is about to compact the conversation.
 
-**Input (stdin):** None significant.
+**Input (stdin):** JSON with `trigger` (`manual` or `auto`) and `custom_instructions`.
 
-**Output (stdout):** JSON `additionalContext` block injected into the compacted context.
+**Output:** None. PreCompact supports only `decision: "block"` — it does **not** support `additionalContext`.
 
-```json
-{
-  "additionalContext": "Roadmap state snapshot written. Next task: TASK-004. Iteration: 7"
-}
-```
-
-**Side effect:** Writes `.context_snapshot.json` to disk.
+**Side effect:** Writes `.context_snapshot.json` to disk. The SessionStart hook (§2.2) reads this file to inject state into the next session.
 
 **`.context_snapshot.json` schema:**
 ```json
@@ -249,13 +249,13 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 
 ---
 
-### ⚠️ MITIGATED: TaskCompleted hook payload field name (was HIGH)
+### ✅ FIXED: TaskCompleted hook was dead code (was HIGH)
 
-**Original risk:** Hook tried `task_id` then `taskId`. If the actual field name differs, the validation gate is silently inoperative.
+**Original risk:** Hook tried to extract roadmap task IDs from the `TaskCompleted` payload, but the payload uses Claude's internal `task_id`, not roadmap IDs.
 
-**Mitigation:** Hook now uses regex scanning (`TASK-\d{3,}`) across all common fields and the full payload as a fallback. Debug log writes to `logs/.taskcompleted_payloads.log` (project-local, not `/tmp`). Remove after confirming on a live run.
+**Root cause (verified against docs):** `TaskCompleted` only fires on `TaskUpdate` tool calls (agent teams feature) or when a teammate finishes its turn. Roadrunner uses neither — it uses `roadrunner.py complete`. The hook never fired.
 
-**Remaining risk:** If the Claude Code `TaskCompleted` payload contains no reference to a `TASK-###` identifier, the gate still passes through. Verify on first live run.
+**Fix:** Removed the hook entirely (ADR-007). Validation gating is already handled by `cmd_complete` in Python, which re-runs `run_validation` before flipping status. Replaced with a `SessionStart` hook for context injection.
 
 ---
 
@@ -373,10 +373,11 @@ When roadrunner stabilizes, package as `roadrunner-cli` on PyPI. Target projects
 | [ADR-004](docs/adr/004-atomic-writes-and-data-integrity.md) | Atomic File Writes for State Integrity | Accepted |
 | [ADR-005](docs/adr/005-absolute-hook-paths.md) | Absolute Hook Paths via $CLAUDE_PROJECT_DIR | Accepted |
 | [ADR-006](docs/adr/006-structured-trace-logging.md) | Structured JSON Trace Logging | Accepted |
+| [ADR-007](docs/adr/007-dead-hook-cleanup.md) | Dead Hook Cleanup (TaskCompleted, MultiEdit, PreCompact additionalContext) | Accepted |
 
 ---
 
 ## 7. Open Questions
 
-1. Does Claude Code's `TaskCompleted` hook payload include a `TASK-###` reference in any field? (Verify on first live run via `logs/.taskcompleted_payloads.log`)
-2. Does `additionalContext` from the PreCompact hook reliably survive compaction? (Verify by observing Claude's behavior after a context reset)
+1. Does the `SessionStart` hook's `additionalContext` reliably appear in Claude's context on session resume? (Verify by observing Claude's behavior after a compaction or session restart)
+2. Does the `PostCompact` event's `compact_summary` field contain useful information for roadmap continuity? (Could supplement the snapshot approach)

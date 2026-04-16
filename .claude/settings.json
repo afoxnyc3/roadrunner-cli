@@ -11,13 +11,13 @@
         ]
       }
     ],
-    "TaskCompleted": [
+    "SessionStart": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/task_completed_hook.sh",
-            "timeout": 60
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/session_start_hook.sh",
+            "timeout": 10
           }
         ]
       }
@@ -35,7 +35,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit",
+        "matcher": "Write|Edit",
         "hooks": [
           {
             "type": "command",

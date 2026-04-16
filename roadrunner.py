@@ -294,13 +294,6 @@ def write_context_snapshot() -> None:
         "status_summary": {t["id"]: t["status"] for t in tasks},
     }
     (ROOT / ".context_snapshot.json").write_text(json.dumps(snapshot, indent=2))
-    print(
-        json.dumps(
-            {
-                "additionalContext": f"Roadmap state snapshot written. Next task: {snapshot['next_eligible']}. Iteration: {snapshot['iteration']}"
-            }
-        )
-    )
 
 
 # ── CLI commands ──────────────────────────────────────────────────────────────

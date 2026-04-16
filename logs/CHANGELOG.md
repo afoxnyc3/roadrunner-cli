@@ -1,3 +1,11 @@
+## 2026-04-16T02:00:00.000000+00:00 | ALL → dead-hook-cleanup
+Verified 3 findings against official Claude Code hooks docs (ADR-007):
+
+- **Removed TaskCompleted hook** — only fires on TaskUpdate/agent-teams, neither of which roadrunner uses. Validation gate was always `cmd_complete` in Python.
+- **Fixed PostToolUse matcher** — removed dead `MultiEdit` from `"Write|Edit|MultiEdit"`.
+- **Removed dead `additionalContext` print from PreCompact** — PreCompact doesn't support that field. Replaced with a SessionStart hook that correctly injects `.context_snapshot.json` as `additionalContext`.
+- **Added SessionStart hook** (`hooks/session_start_hook.sh`) — reads snapshot on session start/resume, injects roadmap state into Claude's context.
+
 ## 2026-04-16T01:30:00.000000+00:00 | ALL → hardening-complete
 Code review reconciliation: verified 14 claims from two independent reviews, implemented fixes across 3 tiers.
 
