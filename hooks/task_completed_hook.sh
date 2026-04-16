@@ -16,25 +16,51 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 INPUT=$(cat)
 
-# Debug: log raw payload so we can confirm field names on first run
-# Remove once TaskCompleted payload schema is confirmed
-echo "$INPUT" >> /tmp/rr_tc_debug.log
+# Debug: log raw payload (project-local, not /tmp) so we can confirm field names.
+# Remove this block once the TaskCompleted payload schema is confirmed from a live run.
+DEBUG_LOG="$PROJECT_ROOT/logs/.taskcompleted_payloads.log"
+mkdir -p "$PROJECT_ROOT/logs"
+echo "--- $(date -u +%Y-%m-%dT%H:%M:%SZ) ---" >> "$DEBUG_LOG"
+echo "$INPUT" >> "$DEBUG_LOG"
 
-# Extract task_id from hook payload
-# NOTE: verify field name against /tmp/rr_tc_debug.log after first run
-# Claude Code may use 'task_id', 'taskId', 'title', or 'content'
+# Extract a TASK-### roadmap id from the payload. Probe common fields, then
+# fall back to scanning the whole payload for a TASK-### token. The roadmap's
+# ID space is TASK-\d{3}+; Claude Code's internal task_id is unrelated.
 TASK_ID=$(echo "$INPUT" | python3 -c "
-import json, sys
+import json, re, sys
 try:
     d = json.load(sys.stdin)
-    # Try common field names in priority order
-    print(d.get('task_id', '') or d.get('taskId', '') or '')
-except:
+except Exception:
     print('')
+    sys.exit(0)
+
+def first_match(s):
+    m = re.search(r'TASK-\d{3,}', s or '')
+    return m.group(0) if m else ''
+
+# Priority order: explicit fields, then nested tool_input, then scan full payload.
+candidates = [
+    d.get('task_id'),
+    d.get('taskId'),
+    d.get('title'),
+    d.get('content'),
+    (d.get('tool_input') or {}).get('task_id'),
+    (d.get('tool_input') or {}).get('subject'),
+    (d.get('tool_input') or {}).get('description'),
+]
+for c in candidates:
+    if isinstance(c, str):
+        hit = first_match(c)
+        if hit:
+            print(hit)
+            sys.exit(0)
+
+# Last resort: scan the entire payload as JSON text.
+print(first_match(json.dumps(d)))
 " 2>/dev/null || echo "")
 
 if [ -z "$TASK_ID" ]; then
-    # No task_id — allow through (not a managed task)
+    # Payload did not reference a roadmap task — allow through.
     exit 0
 fi
 

@@ -37,7 +37,7 @@ fi
 
 # YAML: basic syntax check — emit parse errors without blocking
 if [[ "$FILE_PATH" == *.yaml ]] || [[ "$FILE_PATH" == *.yml ]]; then
-    YAML_OUTPUT=$(python3 -c "import yaml; yaml.safe_load(open('$FILE_PATH'))" 2>&1) || true
+    YAML_OUTPUT=$(python3 -c 'import sys, yaml; yaml.safe_load(open(sys.argv[1]))' "$FILE_PATH" 2>&1) || true
     if [ -n "$YAML_OUTPUT" ]; then
         echo "yaml parse error: $FILE_PATH"
         echo "$YAML_OUTPUT"

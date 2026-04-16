@@ -261,6 +261,20 @@ All hooks use `set -euo pipefail`. If `python3` is unavailable or the script has
 
 ---
 
+### Trust Boundary: tasks.yaml and validation_commands
+
+`tasks.yaml` is a **trust boundary**. The `validation_commands` list is executed via `subprocess.run(cmd, shell=True)` — any command defined there runs with the operator's full privileges. This is by design for a single-operator tool: the operator authors the tasks, the operator trusts the commands.
+
+**Implications:**
+
+- A malicious or careless `validation_commands` entry (e.g., `rm -rf /`) will execute without sandboxing.
+- If this project is ever shared or used in a multi-tenant context, `tasks.yaml` must be treated as executable configuration — review it the way you'd review a Makefile or CI pipeline.
+- The same applies to `acceptance_criteria` or `goal` fields: they don't execute, but they shape Claude's behavior via the task brief. Prompt injection through task definitions is a theoretical concern in shared environments.
+
+**Single-operator assumption:** Roadrunner assumes the person writing `tasks.yaml` is the same person running it. No access control, no sandboxing, no approval flow. This is appropriate for local development and overnight single-machine runs. It is not appropriate for shared infrastructure.
+
+---
+
 ## 4. Recommended Fixes Before First Run
 
 ### 4.1 Fix settings.json hook paths (REQUIRED)

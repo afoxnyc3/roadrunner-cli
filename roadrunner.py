@@ -9,6 +9,8 @@ Hooks own: stop enforcement, completion gating, context snapshots.
 
 import argparse
 import json
+import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -23,23 +25,49 @@ TASKS_FILE = ROOT / "tasks" / "tasks.yaml"
 LOGS_DIR = ROOT / "logs"
 CHANGELOG = LOGS_DIR / "CHANGELOG.md"
 STATE_FILE = ROOT / ".roadmap_state.json"
+TRACE_LOG = LOGS_DIR / "trace.jsonl"
 LOGS_DIR.mkdir(exist_ok=True)
 
 # ── YAML helpers ─────────────────────────────────────────────────────────────
 
 
+REQUIRED_TASK_FIELDS = {"id", "status", "title"}
+
+
+def validate_task_schema(task: dict, index: int) -> None:
+    missing = REQUIRED_TASK_FIELDS - set(task.keys())
+    if missing:
+        task_id = task.get("id", f"<index {index}>")
+        raise ValueError(
+            f"Task {task_id} is missing required fields: {', '.join(sorted(missing))}"
+        )
+    if not isinstance(task.get("validation_commands", []), list):
+        raise ValueError(
+            f"Task {task['id']}: validation_commands must be a list"
+        )
+    if not isinstance(task.get("depends_on", []), list):
+        raise ValueError(f"Task {task['id']}: depends_on must be a list")
+
+
 def load_tasks() -> list[dict]:
     with open(TASKS_FILE) as f:
         data = yaml.safe_load(f)
-    return data.get("tasks", [])
+    tasks = data.get("tasks", [])
+    for i, task in enumerate(tasks):
+        validate_task_schema(task, i)
+    return tasks
 
 
 def save_tasks(tasks: list[dict]) -> None:
     with open(TASKS_FILE) as f:
         data = yaml.safe_load(f)
     data["tasks"] = tasks
-    with open(TASKS_FILE, "w") as f:
+    tmp_path = TASKS_FILE.with_suffix(TASKS_FILE.suffix + ".tmp")
+    with open(tmp_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp_path, TASKS_FILE)
 
 
 def get_task(tasks: list[dict], task_id: str) -> dict | None:
@@ -63,19 +91,40 @@ def next_eligible_task(tasks: list[dict]) -> dict | None:
     return next((t for t in tasks if is_eligible(t, tasks)), None)
 
 
+def active_task(tasks: list[dict]) -> dict | None:
+    return next((t for t in tasks if t.get("status") == "in_progress"), None)
+
+
+ROADMAP_COMPLETE_RE = re.compile(r"^\s*ROADMAP_COMPLETE\s*$")
+
+
+def is_completion_signal(last_msg: str) -> bool:
+    """True only if the last non-empty line of last_msg is ROADMAP_COMPLETE."""
+    if not last_msg:
+        return False
+    for line in reversed(last_msg.splitlines()):
+        if line.strip():
+            return bool(ROADMAP_COMPLETE_RE.match(line))
+    return False
+
+
 # ── Validation ────────────────────────────────────────────────────────────────
 
 
 def run_validation(task: dict) -> tuple[bool, list[dict]]:
     """Run all validation_commands for a task. Returns (passed, results)."""
+    import time
+
     commands = task.get("validation_commands", [])
     if not commands:
         return True, []
 
     results = []
     all_passed = True
+    state = read_state()
 
     for cmd in commands:
+        t0 = time.monotonic()
         result = subprocess.run(
             cmd,
             shell=True,
@@ -83,6 +132,7 @@ def run_validation(task: dict) -> tuple[bool, list[dict]]:
             text=True,
             cwd=ROOT,
         )
+        elapsed = (time.monotonic() - t0) * 1000
         passed = result.returncode == 0
         if not passed:
             all_passed = False
@@ -95,17 +145,39 @@ def run_validation(task: dict) -> tuple[bool, list[dict]]:
                 "stderr": result.stderr.strip()[:500],
             }
         )
+        trace_event(
+            "validation_command",
+            task_id=task["id"],
+            iteration=state.get("iteration"),
+            command=cmd,
+            exit_code=result.returncode,
+            duration_ms=elapsed,
+        )
 
+    trace_event(
+        "validation_complete",
+        task_id=task["id"],
+        iteration=state.get("iteration"),
+        extra={"passed": all_passed, "total": len(results)},
+    )
     return all_passed, results
 
 
 # ── State management ──────────────────────────────────────────────────────────
 
 
-def write_state(current_task_id: str | None, iteration: int) -> None:
+MAX_TASK_ATTEMPTS = 5
+
+
+def write_state(
+    current_task_id: str | None,
+    iteration: int,
+    attempts: dict | None = None,
+) -> None:
     state = {
         "current_task_id": current_task_id,
         "iteration": iteration,
+        "attempts_per_task": attempts or {},
         "updated_at": _now(),
     }
     STATE_FILE.write_text(json.dumps(state, indent=2))
@@ -113,8 +185,17 @@ def write_state(current_task_id: str | None, iteration: int) -> None:
 
 def read_state() -> dict:
     if not STATE_FILE.exists():
-        return {"current_task_id": None, "iteration": 0}
-    return json.loads(STATE_FILE.read_text())
+        return {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
+    data = json.loads(STATE_FILE.read_text())
+    data.setdefault("attempts_per_task", {})
+    return data
+
+
+def increment_attempts(state: dict, task_id: str) -> int:
+    attempts = state.get("attempts_per_task", {})
+    attempts[task_id] = attempts.get(task_id, 0) + 1
+    state["attempts_per_task"] = attempts
+    return attempts[task_id]
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -128,6 +209,33 @@ def append_changelog(task_id: str, status: str, notes: str = "") -> None:
     entry = f"## {_now()} | {task_id} → {status}\n{notes}\n\n"
     with open(CHANGELOG, "a") as f:
         f.write(entry)
+
+
+def trace_event(
+    event_type: str,
+    task_id: str | None = None,
+    iteration: int | None = None,
+    command: str | None = None,
+    exit_code: int | None = None,
+    duration_ms: float | None = None,
+    extra: dict | None = None,
+) -> None:
+    record = {
+        "ts": _now(),
+        "event": event_type,
+        "task_id": task_id,
+        "iteration": iteration,
+    }
+    if command is not None:
+        record["command"] = command
+    if exit_code is not None:
+        record["exit_code"] = exit_code
+    if duration_ms is not None:
+        record["duration_ms"] = round(duration_ms, 1)
+    if extra:
+        record.update(extra)
+    with open(TRACE_LOG, "a") as f:
+        f.write(json.dumps(record, separators=(",", ":")) + "\n")
 
 
 def write_work_log(task: dict, validation_results: list[dict], notes: str = "") -> None:
@@ -239,9 +347,10 @@ def cmd_start(args) -> None:
     state = read_state()
     task["status"] = "in_progress"
     save_tasks(tasks)
-    write_state(args.task_id, state.get("iteration", 0) + 1)
+    write_state(args.task_id, state.get("iteration", 0), state.get("attempts_per_task"))
     append_changelog(args.task_id, "in_progress")
-    print(f"Started {args.task_id}. Iteration {state.get('iteration', 0) + 1}.")
+    trace_event("task_start", task_id=args.task_id, iteration=state.get("iteration", 0))
+    print(f"Started {args.task_id}. Iteration {state.get('iteration', 0)}.")
 
 
 def cmd_validate(args) -> None:
@@ -279,6 +388,8 @@ def cmd_complete(args) -> None:
     write_work_log(task, results, notes=args.notes or "")
     append_changelog(args.task_id, "done", notes=args.notes or "")
     write_reset_marker(args.task_id, summary=args.notes or "Completed.")
+    state = read_state()
+    trace_event("task_complete", task_id=args.task_id, iteration=state.get("iteration"))
     print(f"✅ {args.task_id} marked done.")
 
 
@@ -286,12 +397,18 @@ def cmd_block(args) -> None:
     tasks = load_tasks()
     task = get_task(tasks, args.task_id)
     if not task:
+        print(f"Task {args.task_id} not found.")
         sys.exit(1)
 
     task["status"] = "blocked"
     save_tasks(tasks)
     append_changelog(args.task_id, "blocked", notes=args.notes or "")
     write_work_log(task, [], notes=args.notes or "")
+    state = read_state()
+    trace_event(
+        "task_block", task_id=args.task_id, iteration=state.get("iteration"),
+        extra={"notes": args.notes or ""},
+    )
     print(f"🚫 {args.task_id} marked blocked.")
 
 
@@ -326,8 +443,17 @@ def cmd_check_stop(args) -> None:
         sys.exit(0)
 
     state = read_state()
-    iteration = state.get("iteration", 0)
+    iteration = state.get("iteration", 0) + 1
+    attempts = state.get("attempts_per_task", {})
     max_iter = int(args.max_iterations) if args.max_iterations else 50
+    max_attempts = int(args.max_attempts) if args.max_attempts else MAX_TASK_ATTEMPTS
+    write_state(state.get("current_task_id"), iteration, attempts)
+    trace_event(
+        "check_stop",
+        task_id=state.get("current_task_id"),
+        iteration=iteration,
+        extra={"max_iter": max_iter},
+    )
 
     if iteration >= max_iter:
         print(
@@ -343,8 +469,8 @@ def cmd_check_stop(args) -> None:
     tasks = load_tasks()
     last_msg = stdin_data.get("last_assistant_message", "")
 
-    # Completion signal: Claude outputs ROADMAP_COMPLETE
-    if "ROADMAP_COMPLETE" in last_msg:
+    # Completion signal: Claude outputs ROADMAP_COMPLETE as the last non-empty line
+    if is_completion_signal(last_msg):
         append_changelog(
             "ALL",
             "complete",
@@ -352,18 +478,62 @@ def cmd_check_stop(args) -> None:
         )
         sys.exit(0)
 
+    # Resume in-progress task if Claude responded mid-task
+    in_flight = active_task(tasks)
+    if in_flight:
+        task_attempts = increment_attempts(state, in_flight["id"])
+        write_state(in_flight["id"], iteration, state["attempts_per_task"])
+        if task_attempts >= max_attempts:
+            in_flight["status"] = "blocked"
+            save_tasks(tasks)
+            append_changelog(
+                in_flight["id"],
+                "blocked",
+                notes=f"Auto-blocked after {task_attempts} attempts without completion.",
+            )
+            trace_event(
+                "auto_block",
+                task_id=in_flight["id"],
+                iteration=iteration,
+                extra={"attempts": task_attempts, "max_attempts": max_attempts},
+            )
+            msg = (
+                f"Task {in_flight['id']} auto-blocked after {task_attempts} attempts. "
+                f"Move to the next task or output ROADMAP_COMPLETE on its own line."
+            )
+            print(json.dumps({"decision": "block", "reason": msg}))
+            sys.exit(0)
+        brief = _build_task_brief(in_flight, iteration, max_iter, resume=True)
+        print(json.dumps({"decision": "block", "reason": brief}))
+        sys.exit(0)
+
     next_task = next_eligible_task(tasks)
-    if not next_task:
-        blocked = [t["id"] for t in tasks if t.get("status") == "blocked"]
-        if blocked:
-            msg = f"No eligible tasks. Blocked: {blocked}. Investigate and unblock or output ROADMAP_COMPLETE to halt."
-        else:
-            msg = "All tasks complete. Output ROADMAP_COMPLETE to signal completion."
+    if next_task:
+        brief = _build_task_brief(next_task, iteration, max_iter)
+        print(json.dumps({"decision": "block", "reason": brief}))
+        sys.exit(0)
+
+    # No active or eligible task — check for blocked before declaring done
+    blocked = [t["id"] for t in tasks if t.get("status") == "blocked"]
+    if blocked:
+        msg = (
+            f"No eligible tasks. Blocked: {blocked}. Investigate and unblock, "
+            "or output ROADMAP_COMPLETE on its own line to halt."
+        )
         print(json.dumps({"decision": "block", "reason": msg}))
         sys.exit(0)
 
-    brief = _build_task_brief(next_task, iteration, max_iter)
-    print(json.dumps({"decision": "block", "reason": brief}))
+    remaining = [t["id"] for t in tasks if t.get("status") not in ("done",)]
+    if remaining:
+        msg = (
+            f"No eligible tasks, but these are not done: {remaining}. "
+            "Check dependencies and status. Output ROADMAP_COMPLETE on its own line only if roadmap is truly finished."
+        )
+        print(json.dumps({"decision": "block", "reason": msg}))
+        sys.exit(0)
+
+    msg = "All tasks complete. Output ROADMAP_COMPLETE on its own line to signal completion."
+    print(json.dumps({"decision": "block", "reason": msg}))
     sys.exit(0)
 
 
@@ -371,19 +541,28 @@ def cmd_snapshot(args) -> None:
     write_context_snapshot()
 
 
-def _build_task_brief(task: dict, iteration: int, max_iter: int) -> str:
+def _build_task_brief(
+    task: dict, iteration: int, max_iter: int, resume: bool = False
+) -> str:
     criteria = "\n".join(f"  - {ac}" for ac in task.get("acceptance_criteria", []))
     validation = "\n".join(f"  - {v}" for v in task.get("validation_commands", []))
     files = "\n".join(f"  - {f}" for f in task.get("files_expected", []))
+    header = (
+        f"RESUME IN-PROGRESS TASK. Iteration {iteration}/{max_iter}."
+        if resume
+        else f"Continue working. Iteration {iteration}/{max_iter}."
+    )
+    # Avoid embedding the completion sentinel as a bare line — describe it instead.
+    sentinel_hint = "output the completion sentinel (the word ROADMAP" "_COMPLETE) on its own line"
     return (
-        f"Continue working. Iteration {iteration + 1}/{max_iter}.\n\n"
+        f"{header}\n\n"
         f"CURRENT TASK: {task['id']} — {task.get('title')}\n"
         f"Goal: {task.get('goal', 'N/A')}\n\n"
         f"Acceptance criteria:\n{criteria or '  (none specified)'}\n\n"
         f"Validation commands (must pass before complete):\n{validation or '  (none)'}\n\n"
         f"Expected files:\n{files or '  (none)'}\n\n"
-        f"When done: run `python roadrunner.py complete {task['id']} --notes '...'`\n"
-        f"To signal full roadmap done: output ROADMAP_COMPLETE on its own line."
+        f"When done: run `python3 roadrunner.py complete {task['id']} --notes '...'`\n"
+        f"To signal full roadmap done: {sentinel_hint}."
     )
 
 
@@ -419,6 +598,7 @@ def main() -> None:
 
     p_stop = sub.add_parser("check-stop")
     p_stop.add_argument("--max-iterations", default="50")
+    p_stop.add_argument("--max-attempts", default=str(MAX_TASK_ATTEMPTS))
 
     args = parser.parse_args()
 

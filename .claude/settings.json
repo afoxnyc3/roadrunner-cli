@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash hooks/stop_hook.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/stop_hook.sh",
             "timeout": 30
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash hooks/task_completed_hook.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/task_completed_hook.sh",
             "timeout": 60
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash hooks/precompact_hook.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/precompact_hook.sh",
             "timeout": 30
           }
         ]
@@ -39,7 +39,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash hooks/post_write_hook.sh",
+            "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/post_write_hook.sh",
             "timeout": 30
           }
         ]
