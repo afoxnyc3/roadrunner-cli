@@ -122,36 +122,46 @@ def load_tasks() -> list[dict]:
 
 
 def _rotate_task_backups() -> None:
-    """Keep TASKS_BACKUP_KEEP rolling backups of tasks.yaml.
+    """Shift rolling backups: .bak.N-1 → .bak.N, overwriting the oldest atomically.
 
-    Order: tasks.yaml.bak (newest) → tasks.yaml.bak.1 → ... → tasks.yaml.bak.N (oldest).
-    Callers have already confirmed TASKS_FILE exists.
+    Order (newest → oldest): tasks.yaml.bak, tasks.yaml.bak.1, ..., tasks.yaml.bak.N.
+    Uses ``Path.replace`` so each rename atomically evicts the slot it lands in — no
+    unconditional ``unlink`` of the oldest, which would create a window where the
+    oldest snapshot is gone with nothing to replace it.
     """
-    oldest = TASKS_FILE.with_suffix(f".yaml.bak.{TASKS_BACKUP_KEEP}")
-    if oldest.exists():
-        oldest.unlink()
     for i in range(TASKS_BACKUP_KEEP - 1, 0, -1):
         src = TASKS_FILE.with_suffix(f".yaml.bak.{i}")
         dst = TASKS_FILE.with_suffix(f".yaml.bak.{i + 1}")
         if src.exists():
-            src.rename(dst)
+            src.replace(dst)
     if TASKS_BACKUP.exists():
-        TASKS_BACKUP.rename(TASKS_FILE.with_suffix(".yaml.bak.1"))
+        TASKS_BACKUP.replace(TASKS_FILE.with_suffix(".yaml.bak.1"))
 
 
 def save_tasks(tasks: list[dict]) -> None:
+    # Tolerate an empty or transiently-missing 'tasks:' section by defaulting
+    # to a fresh wrapper dict; re-loading existing top-level keys preserves
+    # any other fields in tasks.yaml the operator may have added.
     with open(TASKS_FILE) as f:
-        data = yaml.safe_load(f)
+        data = yaml.safe_load(f) or {}
+    if not isinstance(data, dict):
+        data = {}
     data["tasks"] = tasks
-    # Roll existing backups and snapshot current file before mutation.
-    if TASKS_FILE.exists():
-        _rotate_task_backups()
-        shutil.copy2(TASKS_FILE, TASKS_BACKUP)
+
+    # Stage the new content first. If serialization fails, nothing above the
+    # temp file is disturbed — backups retain whatever they had.
     tmp_path = TASKS_FILE.with_suffix(TASKS_FILE.suffix + ".tmp")
     with open(tmp_path, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         f.flush()
         os.fsync(f.fileno())
+
+    # Only rotate the backup chain once we know the new content is on disk
+    # and ready to replace. This keeps the rolling chain crash-safe against
+    # any failure in the dump/fsync step above.
+    if TASKS_FILE.exists():
+        _rotate_task_backups()
+        shutil.copy2(TASKS_FILE, TASKS_BACKUP)
     os.replace(tmp_path, TASKS_FILE)
 
 
@@ -458,14 +468,26 @@ LOG_RETAIN_DAYS = 7                  # delete rotated/compressed logs older than
 
 
 def _rotate_one(path: Path) -> None:
-    """Rotate a single log file by renaming with a UTC timestamp suffix and gzipping."""
+    """Rotate a single log file by renaming with a UTC timestamp suffix and gzipping.
+
+    The suffix includes microseconds and falls back to a counter on collision so two
+    rotations within the same microsecond never clobber each other's archives.
+    """
     if not path.exists() or path.stat().st_size < LOG_ROTATE_BYTES:
         return
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
     rotated = path.with_name(f"{path.name}.{stamp}")
+    # Collision safety: if the rotated name or its .gz twin already exists
+    # (same-microsecond rotations on a clock with coarser-than-μs resolution),
+    # append a monotonic counter.
+    counter = 1
+    while rotated.exists() or Path(str(rotated) + ".gz").exists():
+        rotated = path.with_name(f"{path.name}.{stamp}.{counter}")
+        counter += 1
     path.rename(rotated)
-    # Compress the rotated file to save space.
-    gz_path = rotated.with_suffix(rotated.suffix + ".gz")
+    # Avoid ``Path.with_suffix`` here: the timestamp segment looks like a suffix
+    # to pathlib and would be clobbered rather than preserved.
+    gz_path = Path(str(rotated) + ".gz")
     with open(rotated, "rb") as src, gzip.open(gz_path, "wb") as dst:
         shutil.copyfileobj(src, dst)
     rotated.unlink()

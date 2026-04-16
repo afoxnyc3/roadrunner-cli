@@ -65,10 +65,13 @@ def tmp_project(tmp_path):
 
     (logs_dir / "CHANGELOG.md").write_text("")
 
-    # Patch module-level paths
+    # Patch module-level paths. TASKS_BACKUP is derived from TASKS_FILE at
+    # module import time, so it must be re-derived here — otherwise save_tasks
+    # writes backups to the real project dir and contaminates subsequent tests.
     orig = {
         "ROOT": roadrunner.ROOT,
         "TASKS_FILE": roadrunner.TASKS_FILE,
+        "TASKS_BACKUP": roadrunner.TASKS_BACKUP,
         "LOGS_DIR": roadrunner.LOGS_DIR,
         "CHANGELOG": roadrunner.CHANGELOG,
         "STATE_FILE": roadrunner.STATE_FILE,
@@ -76,6 +79,7 @@ def tmp_project(tmp_path):
     }
     roadrunner.ROOT = tmp_path
     roadrunner.TASKS_FILE = tasks_file
+    roadrunner.TASKS_BACKUP = tasks_file.with_suffix(".yaml.bak")
     roadrunner.LOGS_DIR = logs_dir
     roadrunner.CHANGELOG = logs_dir / "CHANGELOG.md"
     roadrunner.STATE_FILE = tmp_path / ".roadmap_state.json"
@@ -310,6 +314,31 @@ class TestAtomicSave:
         # Must not exceed the configured retention
         assert not roadrunner.TASKS_FILE.with_suffix(".yaml.bak.4").exists()
 
+    def test_save_failure_does_not_shift_backup_chain(self, tmp_project, monkeypatch):
+        # Regression guard for H1 in the Opus-4.7 audit: a serialization failure
+        # during save_tasks must not rotate the backup chain, so a transient
+        # bug can't slowly evict good backups by triggering repeated failures.
+        tasks = roadrunner.load_tasks()
+        roadrunner.save_tasks(tasks)                        # produces .bak
+        original_bak_bytes = roadrunner.TASKS_BACKUP.read_bytes()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("disk full — simulated")
+
+        monkeypatch.setattr(roadrunner.yaml, "dump", boom)
+        with pytest.raises(RuntimeError, match="disk full"):
+            roadrunner.save_tasks(tasks)
+
+        # .bak must still be the pre-failure content
+        assert roadrunner.TASKS_BACKUP.read_bytes() == original_bak_bytes
+        # The chain must NOT have shifted — .bak.1 should not exist because
+        # rotation happens only after a successful tmp write.
+        assert not roadrunner.TASKS_FILE.with_suffix(".yaml.bak.1").exists()
+        # Leftover tmp from the failed write gets cleaned up on next successful save
+        tmp_path = roadrunner.TASKS_FILE.with_suffix(roadrunner.TASKS_FILE.suffix + ".tmp")
+        if tmp_path.exists():
+            tmp_path.unlink()
+
 
 # ── Run validation ───────────────────────────────────────────────────────────
 
@@ -461,6 +490,12 @@ class TestCheckStop:
             {"stop_hook_active": False, "last_assistant_message": "done\n\nROADMAP_COMPLETE"},
         )
         assert result is None
+        # Completion path must also write a terminal entry to CHANGELOG so the
+        # audit trail is durable — a returns-early implementation would pass
+        # the "result is None" check alone.
+        changelog = roadrunner.CHANGELOG.read_text()
+        assert "ALL" in changelog
+        assert "Roadmap finished" in changelog
 
     def test_false_positive_blocked(self, tmp_project):
         roadrunner.write_state(None, 0)
@@ -515,6 +550,34 @@ class TestCheckStop:
         reloaded = roadrunner.load_tasks()
         task_002 = roadrunner.get_task(reloaded, "TASK-002")
         assert task_002["status"] == "blocked"
+
+    def test_auto_block_full_progression_from_zero(self, tmp_project):
+        # Drive the full 0 → MAX progression through repeated check_stop calls
+        # to prove the attempt counter increments across real hook cycles and
+        # the task flips to blocked exactly at MAX, not before.
+        tasks = roadrunner.load_tasks()
+        tasks[1]["status"] = "in_progress"
+        roadrunner.save_tasks(tasks)
+        roadrunner.write_state("TASK-002", 0, {})
+        for attempt in range(1, 5):
+            result = self._capture_check_stop(
+                tmp_project,
+                {"stop_hook_active": False, "last_assistant_message": "still working"},
+                max_attempts="5",
+            )
+            assert "RESUME IN-PROGRESS" in result["reason"], f"attempt {attempt} should resume, not block"
+            state = roadrunner.read_state()
+            assert state["attempts_per_task"]["TASK-002"] == attempt
+            # Task stays in_progress until the 5th attempt trips auto-block.
+            assert roadrunner.get_task(roadrunner.load_tasks(), "TASK-002")["status"] == "in_progress"
+        # Fifth cycle trips auto-block.
+        final = self._capture_check_stop(
+            tmp_project,
+            {"stop_hook_active": False, "last_assistant_message": "still working"},
+            max_attempts="5",
+        )
+        assert "auto-blocked" in final["reason"]
+        assert roadrunner.get_task(roadrunner.load_tasks(), "TASK-002")["status"] == "blocked"
 
     def test_iteration_increments_on_check_stop(self, tmp_project):
         roadrunner.write_state(None, 5)
@@ -673,6 +736,27 @@ class TestLogRotation:
 
         monkeypatch.setattr(roadrunner, "_rotate_one", boom)
         roadrunner.rotate_logs()  # must not raise
+
+    def test_rotate_collision_safe_within_same_timestamp(self, tmp_project, monkeypatch):
+        # Regression guard for H4 in the Opus-4.7 audit: back-to-back rotations
+        # whose strftime stamps collide must not clobber the earlier archive.
+        # Freeze the stamp so both calls land on the same filename base.
+        class FrozenDatetime(roadrunner.datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return cls(2026, 4, 16, 12, 0, 0, 0, tzinfo=tz)
+
+        monkeypatch.setattr(roadrunner, "datetime", FrozenDatetime)
+        monkeypatch.setattr(roadrunner, "LOG_ROTATE_BYTES", 10)
+
+        roadrunner.TRACE_LOG.write_text("x" * 50)
+        roadrunner._rotate_one(roadrunner.TRACE_LOG)
+        roadrunner.TRACE_LOG.write_text("y" * 50)
+        roadrunner._rotate_one(roadrunner.TRACE_LOG)
+
+        # Both rotations must be preserved as separate archives.
+        archives = list(roadrunner.LOGS_DIR.glob("trace.jsonl.*.gz"))
+        assert len(archives) == 2, f"expected 2 archives, found {[a.name for a in archives]}"
 
 
 # ── Git branching ────────────────────────────────────────────────────────────
