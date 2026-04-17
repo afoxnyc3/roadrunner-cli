@@ -1,8 +1,8 @@
 name: ci
 
-# Pinned to Node24-native action majors:
-#   actions/checkout@v5   — first Node24-native major
-#   actions/setup-python@v5 — v5.4.0+ is Node24-native; the floating major pulls latest
+# Pinned to Node24-native action majors (Node20 deprecated 2026-06-02):
+#   actions/checkout@v5      — first Node24-native major
+#   actions/setup-python@v6  — first Node24-native major (v5.x is Node20)
 # See: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
 
 on:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -44,7 +44,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
           cache: pip
