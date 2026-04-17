@@ -73,13 +73,17 @@ class TestSessionStartHook:
 
     def test_without_snapshot(self, tmp_path):
         """When snapshot is absent, hook exits 0 silently."""
-        # Run from a directory without a snapshot
+        # Stage a minimal project tree: hook + roadrunner.py + tasks dir.
+        # The bash hook delegates to `python3 $PROJECT_ROOT/roadrunner.py
+        # session-start` which must resolve against the tmp root so we copy
+        # both files.
+        import shutil
         hooks_dir = tmp_path / "hooks"
         hooks_dir.mkdir()
-        # Copy hook files to tmp
-        import shutil
         shutil.copy2(HOOKS_DIR / "session_start_hook.sh", hooks_dir / "session_start_hook.sh")
-        shutil.copy2(HOOKS_DIR / "_session_start.py", hooks_dir / "_session_start.py")
+        shutil.copy2(PROJECT_ROOT / "roadrunner.py", tmp_path / "roadrunner.py")
+        (tmp_path / "tasks").mkdir()
+        (tmp_path / "tasks" / "tasks.yaml").write_text("tasks: []\n")
         result = subprocess.run(
             ["bash", str(hooks_dir / "session_start_hook.sh")],
             input="",

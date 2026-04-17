@@ -52,13 +52,14 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 
 | File | Purpose |
 |---|---|
-| `tasks/tasks.yaml` | Source of truth for task status and definitions. Schema-validated on every load. Written atomically via tempfile + `os.replace`. |
-| `.roadmap_state.json` | Current task ID, iteration count, and per-task attempt counter |
-| `.context_snapshot.json` | Written by PreCompact; survives compaction |
-| `logs/CHANGELOG.md` | Append-only audit trail of status changes |
+| `tasks/tasks.yaml` | Source of truth for task status and definitions. Schema-validated on every load. Written atomically via tempfile + `os.replace`. Rolling backups kept at `tasks/tasks.yaml.bak[.1..5]`. |
+| `.roadmap_state.json` | Current task ID, iteration count, per-task attempt counter. Carries `schema_version` (ADR-009). Serialized read→write is guarded by a `fcntl.flock` on `.roadmap_state.lock` (ADR-009). |
+| `.context_snapshot.json` | Written by PreCompact; read by SessionStart. Carries `schema_version` (ADR-009). |
+| `logs/CHANGELOG.md` | Append-only audit trail of status changes. Rotated at the task boundary when > 10 MB. |
 | `logs/TASK-XXX.md` | Per-task work log with validation output |
-| `logs/trace.jsonl` | Structured JSON trace log — one line per lifecycle event |
+| `logs/trace.jsonl` | Structured JSON trace log — one line per lifecycle event. Rotated and retained for 7 days. |
 | `.reset_TASK-XXX` | Boundary marker written on task completion |
+| `.roadmap_state.lock` | fcntl advisory lockfile; enforces single-writer on the state file during concurrent Stop-hook fires. |
 
 ---
 
@@ -132,12 +133,14 @@ The hook emits `exit 0` plus no JSON in three cases: `stop_hook_active=true`, `R
 **Exit codes:**
 - `exit 0` always — informational, never blocks.
 
-**Logic:**
+**Logic (delegated to `roadrunner.py session-start`):**
 1. Check if `.context_snapshot.json` exists. If not, exit 0 silently.
 2. Parse snapshot, build a summary string from `current_task`, `next_eligible`, `iteration`, and `status_summary`.
 3. Emit JSON with `additionalContext` so Claude starts the session with roadmap awareness.
 
 **Note:** `additionalContext` is a supported output field for `SessionStart` hooks per Claude Code docs. This replaces the previous approach of emitting `additionalContext` from the PreCompact hook (which does not support that field).
+
+**Hook → Python delegation pattern:** Both `session_start_hook.sh` and `precompact_hook.sh` delegate to `roadrunner.py` subcommands (`session-start` and `snapshot`). There is no separate `_session_start.py` helper — Python entry points live in one file (ADR-010). The `.context_snapshot.json` schema carries a `schema_version` field (ADR-009) so a future format change is detectable at read time.
 
 ---
 
@@ -151,9 +154,10 @@ The hook emits `exit 0` plus no JSON in three cases: `stop_hook_active=true`, `R
 
 **Side effect:** Writes `.context_snapshot.json` to disk. The SessionStart hook (§2.2) reads this file to inject state into the next session.
 
-**`.context_snapshot.json` schema:**
+**`.context_snapshot.json` schema (v1):**
 ```json
 {
+  "schema_version": 1,
   "snapshot_at": "2026-04-15T09:00:00Z",
   "current_task": "TASK-003",
   "iteration": 7,
@@ -434,6 +438,8 @@ When roadrunner stabilizes, package as `roadrunner-cli` on PyPI. Target projects
 | [ADR-006](docs/adr/006-structured-trace-logging.md) | Structured JSON Trace Logging | Accepted |
 | [ADR-007](docs/adr/007-dead-hook-cleanup.md) | Dead Hook Cleanup (TaskCompleted, MultiEdit, PreCompact additionalContext) | Accepted |
 | [ADR-008](docs/adr/008-validation-timeout-and-task-id-sanitization.md) | Validation Timeout and Task ID Sanitization | Accepted |
+| [ADR-009](docs/adr/009-state-schema-versioning-and-concurrency-lock.md) | State Schema Versioning and Concurrency Lock | Accepted |
+| [ADR-010](docs/adr/010-hook-python-entrypoint-unification.md) | Hook → Python Entry Point Unification | Accepted |
 
 ---
 

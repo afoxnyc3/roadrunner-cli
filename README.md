@@ -64,6 +64,7 @@ python3 roadrunner.py block TASK-001 --notes "why it's stuck"
 python3 roadrunner.py reset TASK-001 --summary "boundary marker"
 python3 roadrunner.py health           # system check
 python3 roadrunner.py snapshot         # write context snapshot manually
+python3 roadrunner.py session-start    # emit SessionStart hook JSON (called by the hook)
 ```
 
 ## Task Anatomy

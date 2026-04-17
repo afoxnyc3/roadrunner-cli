@@ -919,6 +919,49 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
     write_context_snapshot()
 
 
+def cmd_session_start(args: argparse.Namespace) -> None:
+    """Called by the SessionStart hook. If `.context_snapshot.json` exists,
+    emit a SessionStart `hookSpecificOutput` JSON so the next session starts
+    with roadmap context. Silent no-op when no snapshot is present.
+
+    This mirrors the cmd_snapshot pattern so that both SessionStart and
+    PreCompact hooks have one Python entry point — no separate helper script.
+    """
+    snap_path = ROOT / ".context_snapshot.json"
+    if not snap_path.exists():
+        return
+    try:
+        snap = json.loads(snap_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+
+    parts = []
+    if snap.get("current_task"):
+        parts.append(f"Current task: {snap['current_task']}")
+    if snap.get("next_eligible"):
+        parts.append(f"Next eligible: {snap['next_eligible']}")
+    if snap.get("iteration"):
+        parts.append(f"Iteration: {snap['iteration']}")
+    if snap.get("status_summary"):
+        summary = ", ".join(f"{k}={v}" for k, v in snap["status_summary"].items())
+        parts.append(f"Status: {summary}")
+
+    if not parts:
+        return
+
+    print(
+        json.dumps(
+            {
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": "Roadmap snapshot: " + " | ".join(parts),
+                }
+            },
+            ensure_ascii=False,
+        )
+    )
+
+
 def _build_task_brief(
     task: dict, iteration: int, max_iter: int, resume: bool = False
 ) -> str:
@@ -955,6 +998,7 @@ def main() -> None:
     sub.add_parser("next")
     sub.add_parser("health")
     sub.add_parser("snapshot")
+    sub.add_parser("session-start")
 
     p_start = sub.add_parser("start")
     p_start.add_argument("task_id")
@@ -991,6 +1035,7 @@ def main() -> None:
         "health": cmd_health,
         "check-stop": cmd_check_stop,
         "snapshot": cmd_snapshot,
+        "session-start": cmd_session_start,
     }
 
     if args.command not in dispatch:

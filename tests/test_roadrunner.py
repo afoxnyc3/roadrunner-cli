@@ -1,5 +1,6 @@
 """Tests for roadrunner.py controller logic."""
 
+import argparse
 import json
 import subprocess
 import sys
@@ -929,3 +930,29 @@ class TestUtf8Roundtrip:
         marker_text = (tmp_project / ".reset_TASK-001").read_text()
         assert "résumé" in marker_text
         assert "✓" in marker_text
+
+
+# ── SessionStart handler (N4) ────────────────────────────────────────────────
+
+
+class TestSessionStart:
+    def test_session_start_without_snapshot_is_silent(self, tmp_project, capsys):
+        # No .context_snapshot.json → no stdout, no exception.
+        snap_path = tmp_project / ".context_snapshot.json"
+        if snap_path.exists():
+            snap_path.unlink()
+        roadrunner.cmd_session_start(argparse.Namespace())
+        assert capsys.readouterr().out == ""
+
+    def test_session_start_with_snapshot_emits_additional_context(self, tmp_project, capsys):
+        roadrunner.write_context_snapshot()
+        roadrunner.cmd_session_start(argparse.Namespace())
+        out = capsys.readouterr().out.strip()
+        data = json.loads(out)
+        assert data["hookSpecificOutput"]["hookEventName"] == "SessionStart"
+        assert "Roadmap snapshot" in data["hookSpecificOutput"]["additionalContext"]
+
+    def test_session_start_with_corrupt_snapshot_is_silent(self, tmp_project, capsys):
+        (tmp_project / ".context_snapshot.json").write_text("{not json!!")
+        roadrunner.cmd_session_start(argparse.Namespace())
+        assert capsys.readouterr().out == ""
