@@ -28,6 +28,7 @@ if parts:
                     "hookEventName": "SessionStart",
                     "additionalContext": "Roadmap snapshot: " + " | ".join(parts),
                 }
-            }
+            },
+            ensure_ascii=False,
         )
     )

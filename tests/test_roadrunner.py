@@ -821,10 +821,111 @@ class TestGitBranching:
             cwd=root, capture_output=True,
         ).returncode
         assert exists == 0
-        # The git_merge_error event should be in the trace log
+        # Both the merge error AND the abort step must be in the trace log so
+        # a double-failure (abort itself erroring) is visible to operators.
         trace_text = roadrunner.TRACE_LOG.read_text() if roadrunner.TRACE_LOG.exists() else ""
         assert "git_merge_error" in trace_text
+        assert "git_merge_abort" in trace_text
 
     def test_merge_missing_branch_noop(self, tmp_git_project):
         # No task branch exists — merge_task_branch should succeed trivially
         assert roadrunner.merge_task_branch("TASK-DOESNOTEXIST", "main") is True
+
+
+# ── Schema version (M2) ──────────────────────────────────────────────────────
+
+
+class TestStateSchemaVersion:
+    def test_write_includes_schema_version(self, tmp_project):
+        roadrunner.write_state("TASK-001", 3)
+        data = json.loads(roadrunner.STATE_FILE.read_text())
+        assert data["schema_version"] == roadrunner.STATE_SCHEMA_VERSION
+
+    def test_legacy_state_without_version_reads_as_v1(self, tmp_project):
+        # A state file from an older roadrunner (no schema_version field) must
+        # still be readable — treated as v1 for backward compatibility.
+        roadrunner.STATE_FILE.write_text(
+            json.dumps({"current_task_id": "TASK-002", "iteration": 7, "attempts_per_task": {}})
+        )
+        state = roadrunner.read_state()
+        assert state["current_task_id"] == "TASK-002"
+        assert state["iteration"] == 7
+
+    def test_future_schema_version_exits_and_preserves_file(self, tmp_project, capsys):
+        # A state file from a NEWER roadrunner must not be silently overwritten;
+        # read_state must sys.exit so the caller never falls through to a write.
+        original = json.dumps({"schema_version": 99, "current_task_id": "TASK-X", "iteration": 42})
+        roadrunner.STATE_FILE.write_text(original)
+        with pytest.raises(SystemExit) as exc_info:
+            roadrunner.read_state()
+        assert exc_info.value.code == 2
+        # On-disk state is unchanged so the forward-compatible version is recoverable
+        assert roadrunner.STATE_FILE.read_text() == original
+        err = capsys.readouterr().err
+        assert "unknown schema_version" in err
+
+    def test_snapshot_includes_schema_version(self, tmp_project):
+        roadrunner.write_context_snapshot()
+        snap_path = tmp_project / ".context_snapshot.json"
+        data = json.loads(snap_path.read_text())
+        assert data["schema_version"] == roadrunner.SNAPSHOT_SCHEMA_VERSION
+
+
+# ── Concurrent hook fires (M3) ───────────────────────────────────────────────
+
+
+class TestCheckStopLock:
+    def test_lock_serializes_concurrent_increments(self, tmp_project):
+        # Two threads calling the read→increment→write section back-to-back
+        # must BOTH see their iteration bump land; the lock prevents the classic
+        # lost-update race where both read the same value, both write value+1,
+        # and the second write clobbers the first.
+        import threading
+
+        roadrunner.write_state(None, 0)
+
+        barrier = threading.Barrier(2)
+
+        def bump():
+            barrier.wait()
+            with roadrunner._exclusive_state_lock():
+                s = roadrunner.read_state()
+                roadrunner.write_state(s.get("current_task_id"), s["iteration"] + 1)
+
+        t1 = threading.Thread(target=bump)
+        t2 = threading.Thread(target=bump)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        final = roadrunner.read_state()
+        assert final["iteration"] == 2, (
+            f"expected both bumps to land; got iteration={final['iteration']} "
+            "(lost-update race likely)"
+        )
+
+
+# ── UTF-8 preservation (M4) ──────────────────────────────────────────────────
+
+
+class TestUtf8Roundtrip:
+    def test_trace_preserves_non_ascii(self, tmp_project):
+        roadrunner.trace_event("probe", extra={"title": "café — π"})
+        line = roadrunner.TRACE_LOG.read_text().strip().splitlines()[-1]
+        assert "café" in line
+        assert "π" in line
+        # The escaped form must NOT be present
+        assert "caf\\u00e9" not in line
+
+    def test_state_preserves_non_ascii(self, tmp_project):
+        roadrunner.write_state("TASK-001", 1, extra={"base_branch": "主-branch"})
+        raw = roadrunner.STATE_FILE.read_text()
+        assert "主-branch" in raw
+        assert "\\u" not in raw.replace("\\u0000", "")  # no generic escapes
+
+    def test_reset_marker_preserves_non_ascii(self, tmp_project):
+        roadrunner.write_reset_marker("TASK-001", summary="résumé ✓")
+        marker_text = (tmp_project / ".reset_TASK-001").read_text()
+        assert "résumé" in marker_text
+        assert "✓" in marker_text

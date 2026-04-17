@@ -14,6 +14,7 @@ __pycache__/
 # Roadrunner runtime state (session-local, reconstructible)
 .roadmap_state.json
 .roadmap_state.json.tmp
+.roadmap_state.lock
 .context_snapshot.json
 .reset_TASK-*
 logs/trace.jsonl

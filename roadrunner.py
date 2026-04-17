@@ -15,11 +15,17 @@ import re
 import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypedDict
 
 import yaml
+
+try:
+    import fcntl  # POSIX advisory locking for the state file; Windows is not a target platform.
+except ImportError:  # pragma: no cover - Windows fallback keeps the module importable
+    fcntl = None  # type: ignore[assignment]
 
 
 # ── Type aliases ─────────────────────────────────────────────────────────────
@@ -67,8 +73,24 @@ CHANGELOG = LOGS_DIR / "CHANGELOG.md"
 STATE_FILE = ROOT / ".roadmap_state.json"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
 TASKS_BACKUP = TASKS_FILE.with_suffix(".yaml.bak")
-TASKS_BACKUP_KEEP = 5  # number of rolling tasks.yaml.bak.N copies to retain
+STATE_LOCK = ROOT / ".roadmap_state.lock"  # sibling advisory lockfile; survives os.replace
 LOGS_DIR.mkdir(exist_ok=True)
+
+
+# ── Tunables ─────────────────────────────────────────────────────────────────
+# Collected here so operators have one place to adjust retention and safety knobs.
+
+DEFAULT_VALIDATION_TIMEOUT = 300   # seconds; per-task override via validation_timeout in tasks.yaml
+MAX_TASK_ATTEMPTS = 5              # auto-block a task after this many resume cycles without completion
+TASKS_BACKUP_KEEP = 5              # number of rolling tasks.yaml.bak.N copies to retain
+LOG_ROTATE_BYTES = 10 * 1024 * 1024  # rotate when a log file exceeds 10 MB
+LOG_RETAIN_DAYS = 7                # delete rotated/compressed logs older than this
+STATE_SCHEMA_VERSION = 1           # bump when .roadmap_state.json format changes incompatibly
+SNAPSHOT_SCHEMA_VERSION = 1        # bump when .context_snapshot.json format changes incompatibly
+
+# Built from two fragments so the sentinel string never appears literally in the source
+# (protects against `is_completion_signal` misfiring on the file that defines it).
+_COMPLETION_SIGNAL = "ROADMAP" + "_COMPLETE"
 
 # ── YAML helpers ─────────────────────────────────────────────────────────────
 
@@ -266,7 +288,7 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
     result = _git("merge", branch, "--no-edit", check=False)
     if result.returncode != 0:
         # Abort the in-flight merge so callers can inspect/retry cleanly.
-        _git("merge", "--abort", check=False)
+        abort = _git("merge", "--abort", check=False)
         trace_event(
             "git_merge_error",
             task_id=task_id,
@@ -276,6 +298,17 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
                 "base": base_branch,
             },
         )
+        # Record the abort independently so a double-failure (abort itself
+        # errored, e.g. no merge was actually in progress) is visible in the trace.
+        trace_event(
+            "git_merge_abort",
+            task_id=task_id,
+            extra={
+                "returncode": abort.returncode,
+                "stderr": abort.stderr.strip()[:200],
+                "branch": branch,
+            },
+        )
         return False
     _git("branch", "-d", branch, check=False)
     trace_event("git_branch_merge", task_id=task_id, extra={"branch": branch, "into": base_branch})
@@ -283,8 +316,6 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
 
 
 # ── Validation ────────────────────────────────────────────────────────────────
-
-DEFAULT_VALIDATION_TIMEOUT = 300  # seconds
 
 
 def run_validation(task: dict) -> tuple[bool, list[dict]]:
@@ -356,9 +387,6 @@ def run_validation(task: dict) -> tuple[bool, list[dict]]:
 # ── State management ──────────────────────────────────────────────────────────
 
 
-MAX_TASK_ATTEMPTS = 5
-
-
 def write_state(
     current_task_id: str | None,
     iteration: int,
@@ -366,6 +394,7 @@ def write_state(
     extra: dict | None = None,
 ) -> None:
     state = {
+        "schema_version": STATE_SCHEMA_VERSION,
         "current_task_id": current_task_id,
         "iteration": iteration,
         "attempts_per_task": attempts or {},
@@ -375,7 +404,7 @@ def write_state(
         state.update(extra)
     tmp_path = STATE_FILE.with_suffix(".json.tmp")
     with open(tmp_path, "w") as f:
-        json.dump(state, f, indent=2)
+        json.dump(state, f, indent=2, ensure_ascii=False)
         f.flush()
         os.fsync(f.fileno())
     os.replace(tmp_path, STATE_FILE)
@@ -400,6 +429,18 @@ def read_state() -> dict:
             file=sys.stderr,
         )
         return default
+    # Schema gate: missing version → legacy v1 (backward compatible). Newer version
+    # than we understand → exit immediately so the caller never overwrites the
+    # forward-compat state file. Operator fix: upgrade this tool or migrate state.
+    version = data.get("schema_version", 1)
+    if not isinstance(version, int) or version > STATE_SCHEMA_VERSION:
+        print(
+            f"[roadrunner] state file has unknown schema_version={version!r}; "
+            f"this version of roadrunner only understands up to {STATE_SCHEMA_VERSION}. "
+            f"Upgrade roadrunner or manually migrate {STATE_FILE.name} before continuing.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     data.setdefault("attempts_per_task", {})
     data.setdefault("current_task_id", None)
     data.setdefault("iteration", 0)
@@ -411,6 +452,27 @@ def increment_attempts(state: dict, task_id: str) -> int:
     attempts[task_id] = attempts.get(task_id, 0) + 1
     state["attempts_per_task"] = attempts
     return attempts[task_id]
+
+
+@contextmanager
+def _exclusive_state_lock():
+    """POSIX advisory lock around the state file's read→modify→write window.
+
+    Uses a sibling lockfile so the lock object is not wiped by `os.replace` of the
+    state file itself. On Windows (where `fcntl` is unavailable) this degrades to
+    a no-op since the project only supports POSIX; multi-operator concurrency is
+    a documented non-goal but a single flock closes the accidental-concurrency hole.
+    """
+    if fcntl is None:
+        yield
+        return
+    STATE_LOCK.touch(exist_ok=True)
+    with open(STATE_LOCK, "r+") as f:
+        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -455,16 +517,13 @@ def trace_event(
         record.update(extra)
     try:
         with open(TRACE_LOG, "a") as f:
-            f.write(json.dumps(record, separators=(",", ":")) + "\n")
+            f.write(json.dumps(record, separators=(",", ":"), ensure_ascii=False) + "\n")
     except OSError as exc:
         # Observability must never break the control loop.
         print(f"[roadrunner] trace_event failed: {exc}", file=sys.stderr)
 
 
 # ── Log rotation ──────────────────────────────────────────────────────────────
-
-LOG_ROTATE_BYTES = 10 * 1024 * 1024  # rotate when a log file exceeds 10 MB
-LOG_RETAIN_DAYS = 7                  # delete rotated/compressed logs older than this
 
 
 def _rotate_one(path: Path) -> None:
@@ -561,7 +620,11 @@ def write_work_log(task: dict, validation_results: list[dict], notes: str = "") 
 def write_reset_marker(task_id: str, summary: str) -> None:
     marker = ROOT / f".reset_{task_id}"
     marker.write_text(
-        json.dumps({"task_id": task_id, "summary": summary, "at": _now()}, indent=2)
+        json.dumps(
+            {"task_id": task_id, "summary": summary, "at": _now()},
+            indent=2,
+            ensure_ascii=False,
+        )
     )
 
 
@@ -572,13 +635,16 @@ def write_context_snapshot() -> None:
     next_task = next_eligible_task(tasks)
 
     snapshot = {
+        "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "snapshot_at": _now(),
         "current_task": state.get("current_task_id"),
         "iteration": state.get("iteration", 0),
         "next_eligible": next_task["id"] if next_task else None,
         "status_summary": {t["id"]: t["status"] for t in tasks},
     }
-    (ROOT / ".context_snapshot.json").write_text(json.dumps(snapshot, indent=2))
+    (ROOT / ".context_snapshot.json").write_text(
+        json.dumps(snapshot, indent=2, ensure_ascii=False)
+    )
 
 
 # ── CLI commands ──────────────────────────────────────────────────────────────
@@ -652,7 +718,13 @@ def cmd_validate(args: argparse.Namespace) -> None:
         print(f"Task {args.task_id} not found.")
         sys.exit(1)
 
+    trace_event("validate_start", task_id=args.task_id)
     passed, results = run_validation(task)
+    trace_event(
+        "validate_end",
+        task_id=args.task_id,
+        extra={"passed": passed, "total": len(results)},
+    )
     for r in results:
         icon = "✅" if r["passed"] else "❌"
         print(f"{icon} {r['command']}")
@@ -743,99 +815,104 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
     if stdin_data.get("stop_hook_active"):
         sys.exit(0)
 
-    state = read_state()
-    iteration = state.get("iteration", 0) + 1
-    attempts = state.get("attempts_per_task", {})
-    max_iter = int(args.max_iterations) if args.max_iterations else 50
-    max_attempts = int(args.max_attempts) if args.max_attempts else MAX_TASK_ATTEMPTS
-    write_state(state.get("current_task_id"), iteration, attempts)
-    trace_event(
-        "check_stop",
-        task_id=state.get("current_task_id"),
-        iteration=iteration,
-        extra={"max_iter": max_iter},
-    )
-
-    if iteration >= max_iter:
-        print(
-            json.dumps(
-                {
-                    "continue": False,
-                    "stopReason": f"Max iterations ({max_iter}) reached. Roadmap loop halted.",
-                }
-            )
+    # Serialize concurrent Stop-hook fires so the read→increment→write span in the
+    # body below is atomic. SystemExit from any sys.exit() still releases the lock
+    # via the context manager's finally.
+    with _exclusive_state_lock():
+        state = read_state()
+        iteration = state.get("iteration", 0) + 1
+        attempts = state.get("attempts_per_task", {})
+        max_iter = int(args.max_iterations) if args.max_iterations else 50
+        max_attempts = int(args.max_attempts) if args.max_attempts else MAX_TASK_ATTEMPTS
+        write_state(state.get("current_task_id"), iteration, attempts)
+        trace_event(
+            "check_stop",
+            task_id=state.get("current_task_id"),
+            iteration=iteration,
+            extra={"max_iter": max_iter},
         )
-        sys.exit(0)
 
-    tasks = load_tasks()
-    last_msg = stdin_data.get("last_assistant_message", "")
-
-    # Completion signal: Claude outputs ROADMAP_COMPLETE as the last non-empty line
-    if is_completion_signal(last_msg):
-        append_changelog(
-            "ALL",
-            "complete",
-            notes="Roadmap finished — ROADMAP_COMPLETE signal received.",
-        )
-        sys.exit(0)
-
-    # Resume in-progress task if Claude responded mid-task
-    in_flight = active_task(tasks)
-    if in_flight:
-        task_attempts = increment_attempts(state, in_flight["id"])
-        write_state(in_flight["id"], iteration, state["attempts_per_task"])
-        if task_attempts >= max_attempts:
-            in_flight["status"] = "blocked"
-            save_tasks(tasks)
-            append_changelog(
-                in_flight["id"],
-                "blocked",
-                notes=f"Auto-blocked after {task_attempts} attempts without completion.",
+        if iteration >= max_iter:
+            print(
+                json.dumps(
+                    {
+                        "continue": False,
+                        "stopReason": f"Max iterations ({max_iter}) reached. Roadmap loop halted.",
+                    },
+                    ensure_ascii=False,
+                )
             )
-            trace_event(
-                "auto_block",
-                task_id=in_flight["id"],
-                iteration=iteration,
-                extra={"attempts": task_attempts, "max_attempts": max_attempts},
-            )
-            msg = (
-                f"Task {in_flight['id']} auto-blocked after {task_attempts} attempts. "
-                f"Move to the next task or output ROADMAP_COMPLETE on its own line."
-            )
-            print(json.dumps({"decision": "block", "reason": msg}))
             sys.exit(0)
-        brief = _build_task_brief(in_flight, iteration, max_iter, resume=True)
-        print(json.dumps({"decision": "block", "reason": brief}))
-        sys.exit(0)
 
-    next_task = next_eligible_task(tasks)
-    if next_task:
-        brief = _build_task_brief(next_task, iteration, max_iter)
-        print(json.dumps({"decision": "block", "reason": brief}))
-        sys.exit(0)
+        tasks = load_tasks()
+        last_msg = stdin_data.get("last_assistant_message", "")
 
-    # No active or eligible task — check for blocked before declaring done
-    blocked = [t["id"] for t in tasks if t.get("status") == "blocked"]
-    if blocked:
-        msg = (
-            f"No eligible tasks. Blocked: {blocked}. Investigate and unblock, "
-            "or output ROADMAP_COMPLETE on its own line to halt."
-        )
-        print(json.dumps({"decision": "block", "reason": msg}))
-        sys.exit(0)
+        # Completion signal: Claude outputs ROADMAP_COMPLETE as the last non-empty line
+        if is_completion_signal(last_msg):
+            append_changelog(
+                "ALL",
+                "complete",
+                notes="Roadmap finished — ROADMAP_COMPLETE signal received.",
+            )
+            sys.exit(0)
 
-    remaining = [t["id"] for t in tasks if t.get("status") not in ("done",)]
-    if remaining:
-        msg = (
-            f"No eligible tasks, but these are not done: {remaining}. "
-            "Check dependencies and status. Output ROADMAP_COMPLETE on its own line only if roadmap is truly finished."
-        )
-        print(json.dumps({"decision": "block", "reason": msg}))
-        sys.exit(0)
+        # Resume in-progress task if Claude responded mid-task
+        in_flight = active_task(tasks)
+        if in_flight:
+            task_attempts = increment_attempts(state, in_flight["id"])
+            write_state(in_flight["id"], iteration, state["attempts_per_task"])
+            if task_attempts >= max_attempts:
+                in_flight["status"] = "blocked"
+                save_tasks(tasks)
+                append_changelog(
+                    in_flight["id"],
+                    "blocked",
+                    notes=f"Auto-blocked after {task_attempts} attempts without completion.",
+                )
+                trace_event(
+                    "auto_block",
+                    task_id=in_flight["id"],
+                    iteration=iteration,
+                    extra={"attempts": task_attempts, "max_attempts": max_attempts},
+                )
+                msg = (
+                    f"Task {in_flight['id']} auto-blocked after {task_attempts} attempts. "
+                    f"Move to the next task or output ROADMAP_COMPLETE on its own line."
+                )
+                print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
+                sys.exit(0)
+            brief = _build_task_brief(in_flight, iteration, max_iter, resume=True)
+            print(json.dumps({"decision": "block", "reason": brief}, ensure_ascii=False))
+            sys.exit(0)
 
-    msg = "All tasks complete. Output ROADMAP_COMPLETE on its own line to signal completion."
-    print(json.dumps({"decision": "block", "reason": msg}))
-    sys.exit(0)
+        next_task = next_eligible_task(tasks)
+        if next_task:
+            brief = _build_task_brief(next_task, iteration, max_iter)
+            print(json.dumps({"decision": "block", "reason": brief}, ensure_ascii=False))
+            sys.exit(0)
+
+        # No active or eligible task — check for blocked before declaring done
+        blocked = [t["id"] for t in tasks if t.get("status") == "blocked"]
+        if blocked:
+            msg = (
+                f"No eligible tasks. Blocked: {blocked}. Investigate and unblock, "
+                "or output ROADMAP_COMPLETE on its own line to halt."
+            )
+            print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
+            sys.exit(0)
+
+        remaining = [t["id"] for t in tasks if t.get("status") not in ("done",)]
+        if remaining:
+            msg = (
+                f"No eligible tasks, but these are not done: {remaining}. "
+                "Check dependencies and status. Output ROADMAP_COMPLETE on its own line only if roadmap is truly finished."
+            )
+            print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
+            sys.exit(0)
+
+        msg = "All tasks complete. Output ROADMAP_COMPLETE on its own line to signal completion."
+        print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
+        sys.exit(0)
 
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
@@ -854,7 +931,7 @@ def _build_task_brief(
         else f"Continue working. Iteration {iteration}/{max_iter}."
     )
     # Avoid embedding the completion sentinel as a bare line — describe it instead.
-    sentinel_hint = "output the completion sentinel (the word ROADMAP" "_COMPLETE) on its own line"
+    sentinel_hint = f"output the completion sentinel (the word {_COMPLETION_SIGNAL}) on its own line"
     return (
         f"{header}\n\n"
         f"CURRENT TASK: {task['id']} — {task.get('title')}\n"
