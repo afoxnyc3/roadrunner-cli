@@ -1,161 +1,397 @@
 tasks:
-- id: TASK-001
-  title: Project scaffold and health check
-  status: done
+
+# ── Phase 1: Packaging Foundation ────────────────────────────────────────────
+
+- id: ROAD-001
+  title: pyproject.toml — pip-installable packaging
+  status: todo
   depends_on: []
-  goal: 'Create the base project structure, verify Python environment, and confirm
-    the health command returns correctly.
-
-    '
+  goal: |
+    Replace requirements.txt-only setup with a pyproject.toml that makes roadrunner
+    pip-installable and prepares the project for PyPI. Keep roadrunner.py at the root
+    (flat layout — no src/ restructure). Define a 'roadrunner' CLI entry point pointing
+    to roadrunner:main. Set python_requires>=3.10. Move runtime dep (pyyaml) to
+    [project.dependencies]. Move dev deps (pytest, ruff) to
+    [project.optional-dependencies.dev]. Keep requirements.txt pointing at the extras
+    for backward compat. Add a [tool.ruff] section pinning the lint rules already passing.
   acceptance_criteria:
-  - roadrunner.py health exits 0 and prints 'healthy'
-  - logs/ directory exists and is writable
-  - tasks/tasks.yaml is valid YAML
-  - requirements.txt is present
+    - pyproject.toml exists with [project], [project.scripts], and [project.dependencies]
+    - Entry point roadrunner maps to roadrunner:main
+    - python_requires is set to >=3.10
+    - requirements.txt retained pointing at dev extras or core deps
+    - All existing tests continue to pass
+    - ruff check passes with no new violations
   validation_commands:
-  - python3 roadrunner.py health
-  - python3 -c"import yaml; yaml.safe_load(open('tasks/tasks.yaml'))"
-  - test -f requirements.txt
+    - test -f pyproject.toml
+    - grep -q "roadrunner" pyproject.toml
+    - grep -q "roadrunner:main" pyproject.toml
+    - python3 -m pytest tests/ -q
+    - ruff check roadrunner.py tests/ hooks/
   documentation_targets:
-  - CHANGELOG.md
-  - logs/TASK-001.md
+    - CHANGELOG.md
+    - logs/ROAD-001.md
   files_expected:
-  - requirements.txt
-  - roadrunner.py
-  - tasks/tasks.yaml
-  notes: Foundation task. Must pass before anything else.
-- id: TASK-002
-  title: Stop hook implementation and validation
-  status: done
+    - pyproject.toml
+  notes: |
+    Flat layout keeps 'python3 roadrunner.py' working alongside the installed
+    'roadrunner' CLI. No migration of file structure needed.
+
+# ── Phase 2: Operator UX Commands ─────────────────────────────────────────────
+
+- id: ROAD-002
+  title: roadrunner init — project scaffold command
+  status: todo
   depends_on:
-  - TASK-001
-  goal: 'Implement the Stop hook script, wire it into .claude/settings.json, and verify
-    it correctly blocks Claude Code from stopping when tasks remain and allows stopping
-    when ROADMAP_COMPLETE is signaled.
-
-    '
+    - ROAD-001
+  goal: |
+    Add a new 'init' subcommand to roadrunner.py that scaffolds a new project directory
+    for use with roadrunner. Behaviour:
+      python3 roadrunner.py init <target_dir> [--dry-run]
+    Creates in <target_dir>: tasks/tasks.yaml (minimal template), logs/.gitkeep,
+    CLAUDE.md (minimal template), .claude/settings.json (copied from roadrunner source),
+    hooks/ (copied from roadrunner source). Prints a step-by-step setup checklist.
+    --dry-run prints what would be created without touching the filesystem.
+    If <target_dir> is the current directory ('.'), skip creating the directory.
+    Refuse to overwrite existing files; print a warning and skip each conflict.
   acceptance_criteria:
-  - hooks/stop_hook.sh is executable
-  - .claude/settings.json references stop_hook.sh
-  - stop_hook handles stop_hook_active=true without infinite loop
-  - stop_hook blocks when next eligible task exists
+    - roadrunner init --help exits 0 and lists the --dry-run flag
+    - roadrunner init /tmp/rr_init_smoke --dry-run exits 0 without writing files
+    - roadrunner init /tmp/rr_init_smoke creates the expected structure
+    - Calling init again on same dir does NOT overwrite existing files
+    - All existing tests continue to pass
   validation_commands:
-  - test -x hooks/stop_hook.sh
-  - python3 -c"import json; d=json.load(open('.claude/settings.json')); assert 'Stop'
-    in d['hooks']"
-  - 'echo ''{"stop_hook_active": true}'' | python3 roadrunner.py check-stop; test
-    $? -eq 0'
+    - python3 roadrunner.py init --help
+    - python3 roadrunner.py init /tmp/rr_init_smoke --dry-run
+    - python3 -m pytest tests/ -q
+    - ruff check roadrunner.py
   documentation_targets:
-  - CHANGELOG.md
-  - logs/TASK-002.md
+    - CHANGELOG.md
+    - logs/ROAD-002.md
+    - README.md
   files_expected:
-  - hooks/stop_hook.sh
-  - .claude/settings.json
-  notes: Core loop enforcement. Without this, overnight runs will not work.
-- id: TASK-003
-  title: TaskCompleted hook for validation gating
-  status: done
+    - roadrunner.py
+  notes: |
+    This is the key usability gap: new users must manually copy files per DESIGN.md
+    section 4.1. init automates that. Scaffold CLAUDE.md should be a template
+    with [PROJECT NAME] placeholders, not a copy of the roadrunner project CLAUDE.md.
+
+- id: ROAD-003
+  title: roadrunner analyze — tasks.yaml analysis and validation
+  status: todo
+  depends_on: []
+  goal: |
+    Add a new 'analyze' subcommand to roadrunner.py that reads tasks/tasks.yaml and
+    reports a health summary. Behaviour:
+      python3 roadrunner.py analyze [--tasks-file PATH]
+    Reports:
+      - Total tasks, done/todo/in_progress/blocked counts
+      - Circular dependency detection (A depends on B depends on A)
+      - Unreachable tasks (dependencies reference tasks that don't exist)
+      - Tasks with no validation_commands (validation-free warning)
+      - Estimated minimum linear path (critical path length)
+    Exits 1 if any critical errors found (circular deps, missing deps).
+    Exits 0 with warnings for non-critical issues (no validation commands).
+    --tasks-file PATH allows analyzing a tasks.yaml other than the default.
+  acceptance_criteria:
+    - python3 roadrunner.py analyze exits 0 on the current tasks.yaml
+    - Circular dependency detected and reported as error (exit 1)
+    - Missing dependency reference detected and reported as error (exit 1)
+    - Tasks with no validation_commands reported as warnings (exit 0)
+    - --tasks-file flag accepts a custom path
+    - All existing tests continue to pass
+  validation_commands:
+    - python3 roadrunner.py analyze --help
+    - python3 roadrunner.py analyze
+    - python3 -m pytest tests/ -q
+    - ruff check roadrunner.py
+  documentation_targets:
+    - CHANGELOG.md
+    - logs/ROAD-003.md
+  files_expected:
+    - roadrunner.py
+  notes: |
+    Current is_eligible() silently returns False for circular deps. analyze makes
+    the problem explicit at authoring time, not at runtime. The circular dep
+    detection should be a DFS traversal, not just checking direct deps.
+
+# ── Phase 3: Quality and Type Safety ──────────────────────────────────────────
+
+- id: ROAD-004
+  title: mypy type coverage
+  status: todo
   depends_on:
-  - TASK-002
-  goal: 'Implement a TaskCompleted hook that runs the current task''s validation_commands
-    before allowing done status. If validation fails, exit 2 and feed the error back
-    to the model.
-
-    '
+    - ROAD-001
+  goal: |
+    Add mypy type checking to roadrunner.py. Add a [tool.mypy] section to pyproject.toml
+    with python_version=3.10, ignore_missing_imports=true, warn_return_any=true,
+    warn_unused_ignores=true. Fix all mypy errors in roadrunner.py.
+    Add 'mypy roadrunner.py' step to .github/workflows/ci.yml.
+    Do NOT require strict mode — the goal is zero errors under standard mypy, not
+    strict. TypedDict classes already defined in roadrunner.py should be used as the
+    return/parameter types on the core functions that handle Task and RoadmapState.
+    The CLI handler functions (cmd_*) take argparse.Namespace — annotate them.
   acceptance_criteria:
-  - hooks/task_completed_hook.sh is executable
-  - .claude/settings.json includes TaskCompleted hook
-  - hook exits 2 when validation fails
-  - hook exits 0 when validation passes
+    - python3 -m mypy roadrunner.py exits 0 with no errors
+    - pyproject.toml has [tool.mypy] section
+    - .github/workflows/ci.yml includes a mypy step
+    - All existing pytest tests continue to pass
+    - ruff check passes
   validation_commands:
-  - test -x hooks/task_completed_hook.sh
-  - python3 -c"import json; d=json.load(open('.claude/settings.json')); assert 'TaskCompleted'
-    in d['hooks']"
+    - python3 -m mypy roadrunner.py --ignore-missing-imports
+    - python3 -m pytest tests/ -q
+    - ruff check roadrunner.py
+    - grep -q "mypy" .github/workflows/ci.yml
   documentation_targets:
-  - CHANGELOG.md
-  - logs/TASK-003.md
+    - CHANGELOG.md
+    - logs/ROAD-004.md
   files_expected:
-  - hooks/task_completed_hook.sh
-  notes: Validation gate. Prevents premature completion.
-- id: TASK-004
-  title: PreCompact snapshot hook
-  status: done
+    - pyproject.toml
+    - .github/workflows/ci.yml
+  notes: |
+    The hardest annotations will be: cmd_* handler return types (None),
+    argparse.Namespace parameter types, and the dict-typed state functions.
+    Install mypy: pip install mypy (add to dev extras in pyproject.toml).
+
+# ── Phase 4: PostCompact Hook ──────────────────────────────────────────────────
+
+- id: ROAD-005
+  title: PostCompact hook for context restoration verification
+  status: todo
+  depends_on: []
+  goal: |
+    Add a PostCompact hook that fires after Claude Code completes context compaction.
+    The hook verifies that the context snapshot was restored correctly and logs a
+    verification event to trace.jsonl.
+
+    Per the Claude Code hooks reference, PostCompact fires after compaction completes.
+    It receives JSON input with: trigger (manual|auto), compact_summary (optional text).
+    It does NOT support decision control (no block/allow) — it is side-effect only.
+
+    Implementation:
+    - Add hooks/postcompact_hook.sh: reads stdin, calls python3 roadrunner.py post-compact
+    - Add 'post-compact' subcommand to roadrunner.py: reads .context_snapshot.json,
+      verifies schema_version and required fields, logs a 'post_compact_verify' trace event
+      with success/failure and the compact_summary from the hook payload
+    - Register the hook in .claude/settings.json under PostCompact
+
+    The hook is informational — it logs and exits 0 regardless of outcome.
+  acceptance_criteria:
+    - hooks/postcompact_hook.sh exists and is executable
+    - .claude/settings.json has PostCompact entry
+    - python3 roadrunner.py post-compact --help exits 0
+    - Piping a minimal PostCompact JSON payload through the hook exits 0
+    - trace.jsonl receives a post_compact_verify event when hook fires
+    - All existing tests continue to pass
+  validation_commands:
+    - test -x hooks/postcompact_hook.sh
+    - grep -q "PostCompact" .claude/settings.json
+    - python3 roadrunner.py post-compact --help
+    - python3 -m pytest tests/ -q
+    - ruff check roadrunner.py hooks/
+  documentation_targets:
+    - CHANGELOG.md
+    - logs/ROAD-005.md
+    - DESIGN.md
+  files_expected:
+    - hooks/postcompact_hook.sh
+    - .claude/settings.json
+    - roadrunner.py
+  notes: |
+    PostCompact does not support additionalContext or decision control per the
+    official docs. This is side-effect only (observability). The value is tracing
+    how often compaction happens and whether snapshots are healthy post-compact.
+
+# ── Phase 5: Developer Documentation ──────────────────────────────────────────
+
+- id: ROAD-006
+  title: CONTRIBUTING.md and configuration reference
+  status: todo
+  depends_on: []
+  goal: |
+    Write two documents:
+
+    1. CONTRIBUTING.md at the project root covering:
+       - Dev environment setup (pip install -e .[dev] or requirements.txt)
+       - Running tests (pytest tests/ -v)
+       - Running lint (ruff check roadrunner.py tests/ hooks/)
+       - Running the full CI gate locally (just ci)
+       - PR workflow: branch naming, commit style, what reviewers look for
+       - How to write a new roadrunner subcommand (add to dispatch dict + argparse)
+       - How to write a new hook (register in settings.json + delegate to Python)
+
+    2. docs/configuration.md covering every tunable in roadrunner.py:
+       - All tunables at the top of roadrunner.py: DEFAULT_VALIDATION_TIMEOUT,
+         MAX_TASK_ATTEMPTS, TASKS_BACKUP_KEEP, LOG_ROTATE_BYTES, LOG_RETAIN_DAYS,
+         STATE_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION
+       - ROADMAP_MAX_ITERATIONS env var (passed as --max-iterations to check-stop)
+       - Full tasks.yaml field reference (all fields, types, required vs optional)
+       - State file schemas: .roadmap_state.json and .context_snapshot.json
+  acceptance_criteria:
+    - CONTRIBUTING.md exists at project root
+    - CONTRIBUTING.md has dev setup, test, lint, and new-command sections
+    - docs/configuration.md exists
+    - docs/configuration.md documents all tunables and the tasks.yaml schema
+    - docs/configuration.md mentions MAX_TASK_ATTEMPTS and DEFAULT_VALIDATION_TIMEOUT
+    - All existing tests continue to pass
+  validation_commands:
+    - test -f CONTRIBUTING.md
+    - test -f docs/configuration.md
+    - grep -q "MAX_TASK_ATTEMPTS" docs/configuration.md
+    - grep -q "DEFAULT_VALIDATION_TIMEOUT" docs/configuration.md
+    - python3 -m pytest tests/ -q
+  documentation_targets:
+    - CONTRIBUTING.md
+    - docs/configuration.md
+    - logs/ROAD-006.md
+  files_expected:
+    - CONTRIBUTING.md
+    - docs/configuration.md
+  notes: |
+    This is pure documentation. No code changes. Keep CONTRIBUTING.md under 200 lines.
+    docs/configuration.md can be longer — it is a reference doc.
+
+# ── Phase 6: Watch Command ─────────────────────────────────────────────────────
+
+- id: ROAD-007
+  title: roadrunner watch — live run monitor
+  status: todo
   depends_on:
-  - TASK-002
-  goal: 'Implement a PreCompact hook that writes a context snapshot to disk before
-    conversation compaction. Snapshot must include current task, iteration count,
-    and status summary so Claude can resume after a context window reset.
-
-    '
+    - ROAD-003
+  goal: |
+    Add a 'watch' subcommand that provides a live status view during an overnight run.
+    Behaviour:
+      python3 roadrunner.py watch [--interval N]
+    Polls .roadmap_state.json and tasks/tasks.yaml every N seconds (default 5).
+    Clears terminal and prints:
+      - Current iteration and max
+      - Active task (if any) with attempt count
+      - Task status summary (done/in_progress/todo/blocked counts)
+      - Last 5 trace events from logs/trace.jsonl (event type, task_id, timestamp)
+      - Time elapsed since first trace event
+    Exits cleanly on Ctrl-C (KeyboardInterrupt).
+    Does NOT require a live Claude session — reads from disk state only.
+    Falls back gracefully when trace.jsonl is empty or state file is missing.
   acceptance_criteria:
-  - hooks/precompact_hook.sh is executable
-  - .claude/settings.json includes PreCompact hook
-  - Running snapshot command creates .context_snapshot.json
-  - .context_snapshot.json contains next_eligible and status_summary fields
+    - python3 roadrunner.py watch --help exits 0
+    - python3 roadrunner.py watch --interval 1 runs for 2 seconds without crashing
+    - Output includes iteration count and task summary
+    - KeyboardInterrupt exits cleanly with exit code 0
+    - No new external dependencies required
+    - All existing tests continue to pass
   validation_commands:
-  - test -x hooks/precompact_hook.sh
-  - python3 roadrunner.py snapshot
-  - python3 -c"import json; d=json.load(open('.context_snapshot.json')); assert 'next_eligible'
-    in d"
+    - python3 roadrunner.py watch --help
+    - python3 -m pytest tests/ -q
+    - ruff check roadrunner.py
   documentation_targets:
-  - CHANGELOG.md
-  - logs/TASK-004.md
+    - CHANGELOG.md
+    - logs/ROAD-007.md
+    - README.md
   files_expected:
-  - hooks/precompact_hook.sh
-  - .context_snapshot.json
-  notes: Enables multi-hour runs without context loss.
-- id: TASK-005
-  title: CLAUDE.md agent brief and loop RACI
-  status: done
+    - roadrunner.py
+  notes: |
+    Use time.sleep + os.system('clear') or ANSI escape for terminal clear.
+    Do NOT use curses — adds complexity and breaks on non-TTY. Plain print with
+    clear is enough. The watch command is read-only — it never writes state.
+
+# ── Phase 7: PyPI Release ─────────────────────────────────────────────────────
+
+- id: ROAD-008
+  title: PyPI publish workflow
+  status: todo
   depends_on:
-  - TASK-003
-  - TASK-004
-  goal: 'Write CLAUDE.md that gives Claude Code clear operating instructions: one
-    task at a time, start/complete CLI commands, completion signal, and escalation
-    behavior for blocked tasks.
+    - ROAD-001
+    - ROAD-004
+  goal: |
+    Add a GitHub Actions publish workflow that builds and publishes to PyPI on a
+    version tag push. Use Trusted Publishing (OIDC) — no API tokens stored in secrets.
 
-    '
+    .github/workflows/publish.yml should:
+      - Trigger on push to tags matching v* (e.g. v0.1.0)
+      - Run the full test matrix first (import from ci.yml or inline)
+      - Build with python3 -m build (add build to dev deps)
+      - Publish via pypa/gh-action-pypi-publish@release/v1 with OIDC
+      - Include a manual workflow_dispatch trigger for testing
+
+    Also add a VERSION file at the project root containing the current version string
+    (e.g. '0.1.0') that pyproject.toml reads via dynamic version, OR set version
+    statically in pyproject.toml at 0.1.0.
+
+    Document the PyPI Trusted Publishing setup steps in docs/release.md.
   acceptance_criteria:
-  - CLAUDE.md exists at project root
-  - CLAUDE.md contains ROADMAP_COMPLETE signal instructions
-  - CLAUDE.md references roadrunner.py start and complete commands
-  - CLAUDE.md defines blocked task escalation behavior
+    - .github/workflows/publish.yml exists and is valid YAML
+    - publish.yml triggers on v* tag pushes
+    - publish.yml uses pypa/gh-action-pypi-publish
+    - docs/release.md exists with Trusted Publishing setup instructions
+    - pyproject.toml has a version field (static or dynamic)
+    - python3 -m build --wheel --outdir /tmp/rr_build_test exits 0
   validation_commands:
-  - test -f CLAUDE.md
-  - grep -q 'ROADMAP_COMPLETE' CLAUDE.md
-  - grep -q 'roadrunner.py' CLAUDE.md
+    - test -f .github/workflows/publish.yml
+    - python3 -c "import yaml; yaml.safe_load(open('.github/workflows/publish.yml'))"
+    - grep -q "pypi-publish" .github/workflows/publish.yml
+    - test -f docs/release.md
+    - python3 -m pytest tests/ -q
   documentation_targets:
-  - CHANGELOG.md
-  - logs/TASK-005.md
+    - CHANGELOG.md
+    - logs/ROAD-008.md
+    - docs/release.md
   files_expected:
-  - CLAUDE.md
-  notes: Agent brief is the contract. Must be precise.
-- id: TASK-006
-  title: End-to-end loop smoke test
-  status: done
+    - .github/workflows/publish.yml
+    - docs/release.md
+  notes: |
+    Trusted Publishing eliminates the need to store a PyPI API token in GitHub
+    Secrets. The PyPI project must be created first and OIDC configured via the
+    PyPI UI. Document this manual step in docs/release.md.
+
+# ── Phase 8: End-to-End Example ───────────────────────────────────────────────
+
+- id: ROAD-009
+  title: End-to-end worked example project
+  status: todo
   depends_on:
-  - TASK-005
-  goal: 'Run a full loop cycle manually: start a test task, validate it, complete
-    it, verify logs and changelog were written, and confirm state file updates correctly.
-    Document the test run.
+    - ROAD-002
+    - ROAD-003
+  goal: |
+    Create a small but complete worked example in docs/examples/hello-roadrunner/
+    that demonstrates the full roadrunner workflow for a new user.
 
-    '
+    The example project is a trivial Python utility (e.g. a word counter CLI) with
+    3 tasks that a user can actually run to see the loop in action:
+      DEMO-001: Create word_counter.py with a count_words(text) function
+      DEMO-002: Add a CLI entry point (if __name__ == '__main__')
+      DEMO-003: Add pytest tests and verify they pass
+
+    The example directory should contain:
+      - tasks/tasks.yaml (the 3-task demo roadmap)
+      - CLAUDE.md (minimal template showing the operating contract)
+      - README.md (step-by-step: install roadrunner, copy init, run claude)
+
+    The example MUST be self-contained — someone should be able to:
+      python3 roadrunner.py init docs/examples/hello-roadrunner/ (or copy manually)
+      then run 'claude' from that directory and see the loop complete DEMO-001-003
+
+    The tasks.yaml in the example must pass python3 roadrunner.py analyze when
+    run against it.
   acceptance_criteria:
-  - CHANGELOG.md has at least one entry
-  - logs/ contains at least one task work log
-  - .roadmap_state.json exists and has iteration > 0
-  - python3 roadrunner.py health returns healthy
+    - docs/examples/hello-roadrunner/ directory exists
+    - docs/examples/hello-roadrunner/tasks/tasks.yaml exists with DEMO-001/002/003
+    - docs/examples/hello-roadrunner/CLAUDE.md exists
+    - docs/examples/hello-roadrunner/README.md exists
+    - python3 roadrunner.py analyze --tasks-file docs/examples/hello-roadrunner/tasks/tasks.yaml exits 0
+    - Example README explains the full workflow in under 30 lines
   validation_commands:
-  - test -f logs/CHANGELOG.md
-  - ls logs/*.md | grep -v CHANGELOG
-  - python3 -c"import json; s=json.load(open('.roadmap_state.json')); assert s['iteration']
-    > 0"
-  - python3 roadrunner.py health
+    - test -d docs/examples/hello-roadrunner
+    - test -f docs/examples/hello-roadrunner/tasks/tasks.yaml
+    - test -f docs/examples/hello-roadrunner/README.md
+    - python3 roadrunner.py analyze --tasks-file docs/examples/hello-roadrunner/tasks/tasks.yaml
+    - python3 -m pytest tests/ -q
   documentation_targets:
-  - CHANGELOG.md
-  - logs/TASK-006.md
-  - README.md
+    - CHANGELOG.md
+    - logs/ROAD-009.md
   files_expected:
-  - logs/CHANGELOG.md
-  - .roadmap_state.json
-  notes: Prove the loop works end-to-end before running overnight.
+    - docs/examples/hello-roadrunner/tasks/tasks.yaml
+    - docs/examples/hello-roadrunner/CLAUDE.md
+    - docs/examples/hello-roadrunner/README.md
+  notes: |
+    This is the single most important piece of documentation for adoption. New users
+    need to see the loop work on something concrete before trusting it with their
+    own project. Keep the example minimal — 3 tasks, no external dependencies.
