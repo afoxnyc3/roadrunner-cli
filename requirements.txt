@@ -1,3 +1,4 @@
-pyyaml>=6.0
-pytest>=8.0
-ruff>=0.4.0
+# Backward-compat shim — canonical deps live in pyproject.toml.
+# For a full dev setup: `pip install -e .[dev]`
+# For runtime only:     `pip install -e .`
+-e .[dev]

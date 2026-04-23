@@ -1,0 +1,5 @@
+{
+  "task_id": "ROAD-001",
+  "summary": "pyproject.toml with roadrunner:main entry point, runtime/dev deps split, py>=3.10, ruff pinned to passing baseline",
+  "at": "2026-04-23T13:03:41.041731+00:00"
+}

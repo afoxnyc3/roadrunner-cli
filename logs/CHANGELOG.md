@@ -102,3 +102,57 @@ Roadmap finished — ROADMAP_COMPLETE signal received.
 ## 2026-04-17T20:57:12.834321+00:00 | ALL → complete
 Roadmap finished — ROADMAP_COMPLETE signal received.
 
+## 2026-04-17T22:33:24.961650+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T13:02:12.087073+00:00 | ROAD-001 → in_progress
+
+
+## 2026-04-23T13:02:55.777151+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T13:03:21.913014+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T13:03:36.305252+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T13:03:37.450474+00:00 | ROAD-001 → done
+Added pyproject.toml (setuptools backend, flat layout via py-modules=['roadrunner']). Runtime dep pyyaml under [project.dependencies]; pytest+ruff under [project.optional-dependencies.dev]. CLI entry 'roadrunner'→roadrunner:main. requires-python>=3.10. requirements.txt now a back-compat shim pointing at '-e .[dev]'. [tool.ruff] pinned to E/F/W with line-length=140 to match currently-passing baseline (stricter rules would fail on pre-existing code outside task scope).
+
+## 2026-04-23T13:07:15.613234+00:00 | ROAD-002 → in_progress
+
+
+## 2026-04-23T13:08:46.176201+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T13:08:56.088700+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T13:08:57.264344+00:00 | ROAD-002 → done
+Added 'init' subcommand. cmd_init() builds a declarative plan (mkdir/write/copy), walks it with per-file refuse-to-overwrite, and supports --dry-run. Scaffolds tasks/tasks.yaml (minimal template), logs/.gitkeep, CLAUDE.md (minimal agent brief), .claude/settings.json (copied from source), hooks/*.sh (copied + chmod +x). Target '.' reuses cwd; any other path is created if missing. Prints a 5-step setup checklist after the plan executes. Sources resolve relative to Path(__file__).parent so dev/editable installs work today; PyPI packaging of data files is deferred to ROAD-008.
+
+## 2026-04-23T13:13:19.745555+00:00 | ROAD-003 → in_progress
+
+
+## 2026-04-23T13:14:30.752826+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T13:14:40.338563+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T13:14:41.481706+00:00 | ROAD-003 → done
+Added 'analyze' subcommand. Loads tasks.yaml (default TASKS_FILE or --tasks-file PATH) and reports: total + per-status counts (done/todo/in_progress/blocked/other), missing-dep references, circular deps via 3-color DFS (dedupes on sorted vertex set), validation_commands-free warnings, and longest dependency chain (critical path, computed only if acyclic). Exits 1 on any error (missing deps, cycles); exits 0 with warnings otherwise. Smoke-tested on current tasks.yaml (0 issues) plus synthetic fixtures for cycle, missing-dep, and no-validation cases — each branch took the expected path and exit code.
+
+## 2026-04-23T15:56:44.450680+00:00 | ROAD-004 → in_progress
+
+
+## 2026-04-23T16:00:06.875436+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T16:00:23.916975+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-23T16:00:37.777981+00:00 | ROAD-004 → done
+Zero mypy errors on roadrunner.py under standard (non-strict) mypy. Fixes split into three lanes: (1) local annotation fixes — default RoadmapState literal in read_state, dict[str, Any] on trace_event record, assert on copy-plan src. (2) TypedDict propagation — load_tasks→list[Task], read_state→RoadmapState, plus downstream signatures: save_tasks, get_task, is_eligible, next_eligible_task, active_task, increment_attempts, run_validation, write_work_log, _build_task_brief. ValidationResult applied to run_validation's results list and per-command entry. (3) cast() at yaml/json boundaries where Any leaks out (load_tasks return, read_state return). Added [tool.mypy] to pyproject.toml (python_version=3.10, ignore_missing_imports, warn_return_any, warn_unused_ignores). Added mypy CI job installing mypy + types-PyYAML. Ruff and pytest still clean. (Note: task files_expected only listed pyproject.toml and ci.yml, but the goal text requires fixing errors in roadrunner.py — edited in-scope per CLAUDE.md guidance.)
+

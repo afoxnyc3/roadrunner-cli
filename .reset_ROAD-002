@@ -1,0 +1,5 @@
+{
+  "task_id": "ROAD-002",
+  "summary": "roadrunner init <dir> [--dry-run] scaffolds tasks/logs/CLAUDE.md/.claude/hooks with refuse-to-overwrite; source files resolved from Path(__file__).parent",
+  "at": "2026-04-23T13:09:01.085835+00:00"
+}

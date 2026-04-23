@@ -1,0 +1,5 @@
+{
+  "task_id": "ROAD-003",
+  "summary": "roadrunner analyze reports status counts, missing-dep errors, cycle detection (DFS), validation-command warnings, and critical-path length; accepts --tasks-file",
+  "at": "2026-04-23T13:14:45.710119+00:00"
+}

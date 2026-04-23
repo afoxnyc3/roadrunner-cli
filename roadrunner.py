@@ -18,7 +18,7 @@ import sys
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import TypedDict
+from typing import Any, TypedDict, cast
 
 import yaml
 
@@ -96,6 +96,7 @@ _COMPLETION_SIGNAL = "ROADMAP" + "_COMPLETE"
 
 
 REQUIRED_TASK_FIELDS = {"id", "status", "title"}
+VALID_TASK_STATUSES = {"todo", "in_progress", "done", "blocked"}
 TASK_ID_RE = re.compile(r"^[A-Z]+-\d+$")
 
 
@@ -112,6 +113,12 @@ def validate_task_schema(task: dict, index: int) -> None:
             f"Task {task_id!r} has invalid ID format. "
             f"Must match [A-Z]+-\\d+ (e.g., TASK-001)"
         )
+    status = task.get("status")
+    if status not in VALID_TASK_STATUSES:
+        raise ValueError(
+            f"Task {task['id']}: invalid status {status!r}. "
+            f"Must be one of: {', '.join(sorted(VALID_TASK_STATUSES))}"
+        )
     if not isinstance(task.get("validation_commands", []), list):
         raise ValueError(
             f"Task {task['id']}: validation_commands must be a list"
@@ -123,7 +130,7 @@ def validate_task_schema(task: dict, index: int) -> None:
         raise ValueError(f"Task {task['id']}: validation_timeout must be a positive number")
 
 
-def load_tasks() -> list[dict]:
+def load_tasks() -> list[Task]:
     try:
         with open(TASKS_FILE) as f:
             data = yaml.safe_load(f) or {}
@@ -140,7 +147,7 @@ def load_tasks() -> list[dict]:
     tasks = data.get("tasks", [])
     for i, task in enumerate(tasks):
         validate_task_schema(task, i)
-    return tasks
+    return cast(list[Task], tasks)
 
 
 def _rotate_task_backups() -> None:
@@ -160,7 +167,7 @@ def _rotate_task_backups() -> None:
         TASKS_BACKUP.replace(TASKS_FILE.with_suffix(".yaml.bak.1"))
 
 
-def save_tasks(tasks: list[dict]) -> None:
+def save_tasks(tasks: list[Task]) -> None:
     # Tolerate an empty or transiently-missing 'tasks:' section by defaulting
     # to a fresh wrapper dict; re-loading existing top-level keys preserves
     # any other fields in tasks.yaml the operator may have added.
@@ -187,14 +194,14 @@ def save_tasks(tasks: list[dict]) -> None:
     os.replace(tmp_path, TASKS_FILE)
 
 
-def get_task(tasks: list[dict], task_id: str) -> dict | None:
+def get_task(tasks: list[Task], task_id: str) -> Task | None:
     return next((t for t in tasks if t["id"] == task_id), None)
 
 
 # ── Eligibility ───────────────────────────────────────────────────────────────
 
 
-def is_eligible(task: dict, tasks: list[dict]) -> bool:
+def is_eligible(task: Task, tasks: list[Task]) -> bool:
     if task.get("status") != "todo":
         return False
     for dep_id in task.get("depends_on", []):
@@ -204,11 +211,11 @@ def is_eligible(task: dict, tasks: list[dict]) -> bool:
     return True
 
 
-def next_eligible_task(tasks: list[dict]) -> dict | None:
+def next_eligible_task(tasks: list[Task]) -> Task | None:
     return next((t for t in tasks if is_eligible(t, tasks)), None)
 
 
-def active_task(tasks: list[dict]) -> dict | None:
+def active_task(tasks: list[Task]) -> Task | None:
     return next((t for t in tasks if t.get("status") == "in_progress"), None)
 
 
@@ -318,7 +325,7 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
 # ── Validation ────────────────────────────────────────────────────────────────
 
 
-def run_validation(task: dict) -> tuple[bool, list[dict]]:
+def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
     """Run all validation_commands for a task. Returns (passed, results)."""
     import time
 
@@ -326,7 +333,7 @@ def run_validation(task: dict) -> tuple[bool, list[dict]]:
     if not commands:
         return True, []
 
-    results = []
+    results: list[ValidationResult] = []
     all_passed = True
     state = read_state()
     timeout = task.get("validation_timeout", DEFAULT_VALIDATION_TIMEOUT)
@@ -356,7 +363,7 @@ def run_validation(task: dict) -> tuple[bool, list[dict]]:
         elapsed = (time.monotonic() - t0) * 1000
         if not passed:
             all_passed = False
-        entry = {
+        entry: ValidationResult = {
             "command": cmd,
             "passed": passed,
             "returncode": returncode,
@@ -410,8 +417,8 @@ def write_state(
     os.replace(tmp_path, STATE_FILE)
 
 
-def read_state() -> dict:
-    default = {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
+def read_state() -> RoadmapState:
+    default: RoadmapState = {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
     if not STATE_FILE.exists():
         return default
     try:
@@ -444,10 +451,10 @@ def read_state() -> dict:
     data.setdefault("attempts_per_task", {})
     data.setdefault("current_task_id", None)
     data.setdefault("iteration", 0)
-    return data
+    return cast(RoadmapState, data)
 
 
-def increment_attempts(state: dict, task_id: str) -> int:
+def increment_attempts(state: RoadmapState, task_id: str) -> int:
     attempts = state.get("attempts_per_task", {})
     attempts[task_id] = attempts.get(task_id, 0) + 1
     state["attempts_per_task"] = attempts
@@ -501,7 +508,7 @@ def trace_event(
     duration_ms: float | None = None,
     extra: dict | None = None,
 ) -> None:
-    record = {
+    record: dict[str, Any] = {
         "ts": _now(),
         "event": event_type,
         "task_id": task_id,
@@ -582,7 +589,7 @@ def rotate_logs() -> None:
         print(f"[roadrunner] rotate_logs failed: {exc}", file=sys.stderr)
 
 
-def write_work_log(task: dict, validation_results: list[dict], notes: str = "") -> None:
+def write_work_log(task: Task, validation_results: list[ValidationResult], notes: str = "") -> None:
     log_path = LOGS_DIR / f"{task['id']}.md"
     passed_count = sum(1 for r in validation_results if r["passed"])
     total = len(validation_results)
@@ -919,6 +926,251 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
     write_context_snapshot()
 
 
+_INIT_TASKS_TEMPLATE = """\
+tasks:
+  - id: TASK-001
+    title: "First task — replace me"
+    status: todo
+    depends_on: []
+    goal: |
+      Describe what this task accomplishes. Keep the scope to a single
+      boundary — one task per cycle, no side quests.
+    acceptance_criteria:
+      - "Describe a concrete, observable outcome"
+    validation_commands:
+      - "echo 'replace with a real check (test, lint, build)'"
+    files_expected: []
+"""
+
+_INIT_CLAUDE_MD_TEMPLATE = """\
+# CLAUDE.md — Roadmap Loop Agent Brief
+
+You are executing a deterministic roadmap. Python owns control. You own implementation.
+One task per cycle. No side quests. No skipping ahead.
+
+## Each cycle
+1. `python3 roadrunner.py next`
+2. `python3 roadrunner.py start TASK-XXX`
+3. Implement inside the task boundary
+4. `python3 roadrunner.py validate TASK-XXX`
+5. `python3 roadrunner.py complete TASK-XXX --notes "..."`
+6. `python3 roadrunner.py reset TASK-XXX --summary "..."`
+
+When every task is `done` and nothing is eligible, output the sentinel
+`ROADMAP_COMPLETE` on its own line as the last line of your message.
+"""
+
+
+def _init_plan(target: Path, source: Path) -> list[tuple[str, Path, Path | None, str | None]]:
+    """Return the list of scaffold actions as (kind, dest, src_or_none, content_or_none).
+
+    kind is one of: 'mkdir', 'write', 'copy'. For 'write', content is the string to
+    emit; for 'copy', src is the source path on disk.
+    """
+    plan: list[tuple[str, Path, Path | None, str | None]] = [
+        ("mkdir", target / "tasks", None, None),
+        ("write", target / "tasks" / "tasks.yaml", None, _INIT_TASKS_TEMPLATE),
+        ("mkdir", target / "logs", None, None),
+        ("write", target / "logs" / ".gitkeep", None, ""),
+        ("write", target / "CLAUDE.md", None, _INIT_CLAUDE_MD_TEMPLATE),
+    ]
+    settings_src = source / ".claude" / "settings.json"
+    if settings_src.is_file():
+        plan.append(("mkdir", target / ".claude", None, None))
+        plan.append(("copy", target / ".claude" / "settings.json", settings_src, None))
+    hooks_src = source / "hooks"
+    if hooks_src.is_dir():
+        plan.append(("mkdir", target / "hooks", None, None))
+        for hook_file in sorted(hooks_src.iterdir()):
+            if hook_file.is_file():
+                plan.append(("copy", target / "hooks" / hook_file.name, hook_file, None))
+    return plan
+
+
+def cmd_init(args: argparse.Namespace) -> None:
+    raw_target = args.target_dir
+    target = Path.cwd() if raw_target == "." else Path(raw_target).expanduser().resolve()
+    source = ROOT
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    prefix = "[dry-run] " if dry_run else ""
+    print(f"{prefix}Scaffolding roadrunner project at: {target}")
+
+    if raw_target != "." and not target.exists() and not dry_run:
+        target.mkdir(parents=True)
+
+    plan = _init_plan(target, source)
+    created: list[str] = []
+    skipped: list[str] = []
+    for kind, dest, src, content in plan:
+        rel = dest.relative_to(target) if dest.is_relative_to(target) else dest
+        if kind == "mkdir":
+            if dest.exists():
+                if not dest.is_dir():
+                    skipped.append(f"{rel} (exists, not a directory)")
+                continue
+            if dry_run:
+                print(f"{prefix}mkdir  {rel}/")
+            else:
+                dest.mkdir(parents=True, exist_ok=True)
+                print(f"mkdir  {rel}/")
+            created.append(f"{rel}/")
+        elif kind == "write":
+            if dest.exists():
+                print(f"skip   {rel} (already exists)")
+                skipped.append(str(rel))
+                continue
+            if dry_run:
+                print(f"{prefix}write  {rel}")
+            else:
+                dest.write_text(content or "", encoding="utf-8")
+                print(f"write  {rel}")
+            created.append(str(rel))
+        elif kind == "copy":
+            assert src is not None, "copy plan entries always carry a source path"
+            if dest.exists():
+                print(f"skip   {rel} (already exists)")
+                skipped.append(str(rel))
+                continue
+            if dry_run:
+                print(f"{prefix}copy   {rel}  <-  {src}")
+            else:
+                shutil.copy2(src, dest)
+                if dest.suffix == ".sh":
+                    dest.chmod(dest.stat().st_mode | 0o111)
+                print(f"copy   {rel}  <-  {src}")
+            created.append(str(rel))
+
+    print()
+    print("Next steps:")
+    print("  1. Edit tasks/tasks.yaml — replace TASK-001 with your real first task.")
+    print("  2. Review CLAUDE.md and tailor the agent brief to your project.")
+    print("  3. Confirm .claude/settings.json wires up the hooks you want to run.")
+    print("  4. Run `python3 roadrunner.py status` to confirm the roadmap parses.")
+    print("  5. Start the loop with `python3 roadrunner.py next`.")
+    if skipped:
+        print()
+        print(f"Skipped {len(skipped)} existing path(s); they were left untouched.")
+
+
+def _load_tasks_from(path: Path) -> list[dict]:
+    with open(path) as f:
+        data = yaml.safe_load(f) or {}
+    return list(data.get("tasks") or [])
+
+
+def _find_cycles(ids: list[str], dep_map: dict[str, list[str]]) -> list[list[str]]:
+    """DFS-based cycle detection. Returns each unique cycle as a list of task IDs."""
+    WHITE, GRAY, BLACK = 0, 1, 2
+    color: dict[str, int] = {tid: WHITE for tid in ids}
+    cycles: list[list[str]] = []
+    seen: set[tuple[str, ...]] = set()
+
+    def walk(node: str, stack: list[str]) -> None:
+        color[node] = GRAY
+        for dep in dep_map.get(node, []):
+            if dep not in color:
+                continue
+            if color[dep] == GRAY and dep in stack:
+                cycle = stack[stack.index(dep):] + [dep]
+                key = tuple(sorted(set(cycle)))
+                if key not in seen:
+                    seen.add(key)
+                    cycles.append(cycle)
+            elif color[dep] == WHITE:
+                walk(dep, stack + [dep])
+        color[node] = BLACK
+
+    for tid in ids:
+        if color[tid] == WHITE:
+            walk(tid, [tid])
+    return cycles
+
+
+def _longest_chain(ids: list[str], dep_map: dict[str, list[str]]) -> int:
+    """Length of the longest dependency chain in task count. Caller must ensure the graph is acyclic."""
+    memo: dict[str, int] = {}
+
+    def depth(tid: str) -> int:
+        if tid in memo:
+            return memo[tid]
+        deps = [d for d in dep_map.get(tid, []) if d in dep_map]
+        memo[tid] = 1 + max((depth(d) for d in deps), default=0)
+        return memo[tid]
+
+    return max((depth(t) for t in ids), default=0)
+
+
+def cmd_analyze(args: argparse.Namespace) -> None:
+    path = Path(args.tasks_file).expanduser().resolve() if args.tasks_file else TASKS_FILE
+    try:
+        tasks = _load_tasks_from(path)
+    except FileNotFoundError:
+        print(f"error: tasks file not found at {path}", file=sys.stderr)
+        sys.exit(1)
+    except yaml.YAMLError as exc:
+        print(f"error: invalid YAML in {path}: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    total = len(tasks)
+    counts = {"done": 0, "todo": 0, "in_progress": 0, "blocked": 0, "other": 0}
+    for t in tasks:
+        status = t.get("status", "todo")
+        counts[status if status in counts else "other"] += 1
+
+    ids = [t["id"] for t in tasks if t.get("id")]
+    id_set = set(ids)
+    dep_map: dict[str, list[str]] = {
+        t["id"]: list(t.get("depends_on") or []) for t in tasks if t.get("id")
+    }
+
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    for tid, deps in dep_map.items():
+        for dep in deps:
+            if dep not in id_set:
+                errors.append(f"task {tid} depends on unknown task {dep!r}")
+
+    cycles = _find_cycles(ids, dep_map)
+    for cycle in cycles:
+        errors.append(f"circular dependency: {' -> '.join(cycle)}")
+
+    for t in tasks:
+        if not (t.get("validation_commands") or []):
+            warnings.append(f"task {t.get('id', '<no-id>')} has no validation_commands")
+
+    critical_path = _longest_chain(ids, dep_map) if not cycles else 0
+
+    print(f"Analyzed: {path}")
+    print(f"Total tasks: {total}")
+    print(f"  done:        {counts['done']}")
+    print(f"  todo:        {counts['todo']}")
+    print(f"  in_progress: {counts['in_progress']}")
+    print(f"  blocked:     {counts['blocked']}")
+    if counts["other"]:
+        print(f"  other:       {counts['other']}")
+    if critical_path:
+        print(f"Critical path (longest dep chain): {critical_path} tasks")
+
+    if errors:
+        print()
+        print(f"Errors ({len(errors)}):")
+        for e in errors:
+            print(f"  ❌ {e}")
+    if warnings:
+        print()
+        print(f"Warnings ({len(warnings)}):")
+        for w in warnings:
+            print(f"  ⚠️  {w}")
+
+    if not errors and not warnings:
+        print()
+        print("✅ No issues found.")
+
+    sys.exit(1 if errors else 0)
+
+
 def cmd_session_start(args: argparse.Namespace) -> None:
     """Called by the SessionStart hook. If `.context_snapshot.json` exists,
     emit a SessionStart `hookSpecificOutput` JSON so the next session starts
@@ -963,7 +1215,7 @@ def cmd_session_start(args: argparse.Namespace) -> None:
 
 
 def _build_task_brief(
-    task: dict, iteration: int, max_iter: int, resume: bool = False
+    task: Task, iteration: int, max_iter: int, resume: bool = False
 ) -> str:
     criteria = "\n".join(f"  - {ac}" for ac in task.get("acceptance_criteria", []))
     validation = "\n".join(f"  - {v}" for v in task.get("validation_commands", []))
@@ -1022,6 +1274,21 @@ def main() -> None:
     p_stop.add_argument("--max-iterations", default="50")
     p_stop.add_argument("--max-attempts", default=str(MAX_TASK_ATTEMPTS))
 
+    p_init = sub.add_parser("init", help="Scaffold a new roadrunner project directory")
+    p_init.add_argument("target_dir", help="Target directory (use '.' for current working directory)")
+    p_init.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print what would be created without touching the filesystem",
+    )
+
+    p_analyze = sub.add_parser("analyze", help="Analyze tasks.yaml for cycles, missing deps, and coverage")
+    p_analyze.add_argument(
+        "--tasks-file",
+        default=None,
+        help="Path to a tasks.yaml file (defaults to the project tasks/tasks.yaml)",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -1036,6 +1303,8 @@ def main() -> None:
         "check-stop": cmd_check_stop,
         "snapshot": cmd_snapshot,
         "session-start": cmd_session_start,
+        "init": cmd_init,
+        "analyze": cmd_analyze,
     }
 
     if args.command not in dispatch:

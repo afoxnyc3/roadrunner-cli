@@ -1,0 +1,5 @@
+{
+  "task_id": "ROAD-004",
+  "summary": "mypy clean on roadrunner.py; TypedDicts (Task/RoadmapState/ValidationResult) applied across core helpers; [tool.mypy] + mypy CI job added",
+  "at": "2026-04-23T16:00:41.738864+00:00"
+}

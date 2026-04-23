@@ -119,6 +119,21 @@ class TestValidateTaskSchema:
         with pytest.raises(ValueError, match="depends_on must be a list"):
             roadrunner.validate_task_schema(task, 0)
 
+    def test_invalid_status_pending(self):
+        task = {"id": "TST-001", "status": "pending", "title": "T"}
+        with pytest.raises(ValueError, match="invalid status 'pending'"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_invalid_status_hyphenated(self):
+        task = {"id": "TST-001", "status": "in-progress", "title": "T"}
+        with pytest.raises(ValueError, match="invalid status 'in-progress'"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_all_valid_statuses_accepted(self):
+        for status in ("todo", "in_progress", "done", "blocked"):
+            task = {"id": "TST-001", "status": status, "title": "T"}
+            roadrunner.validate_task_schema(task, 0)
+
     def test_bad_id_path_traversal(self):
         task = {"id": "../etc", "status": "todo", "title": "T"}
         with pytest.raises(ValueError, match="invalid ID format"):
