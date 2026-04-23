@@ -84,6 +84,8 @@ You'll see something like `healthy — 6/6 done, 0 eligible, 0 blocked` if you'r
 
 ## How To Use It End-to-End
 
+> See [docs/WORKFLOW.md](docs/WORKFLOW.md) for end-to-end workflow diagrams covering the five stages, per-task cycle, Stop hook decision tree, and a worked example task DAG.
+
 **Step 1. Describe the work.** Each task in `tasks/tasks.yaml` looks like this:
 
 ```yaml
