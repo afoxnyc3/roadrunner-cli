@@ -1457,41 +1457,78 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
 
 def cmd_session_start(args: argparse.Namespace) -> None:
-    """Called by the SessionStart hook. If `.context_snapshot.json` exists,
-    emit a SessionStart `hookSpecificOutput` JSON so the next session starts
-    with roadmap context. Silent no-op when no snapshot is present.
+    """Called by the SessionStart hook. Emits a `hookSpecificOutput` JSON whose
+    `additionalContext` reads as an INSTRUCTION, not ambient status — so the
+    agent starts working on turn 1 without the user needing to type "Begin."
 
-    This mirrors the cmd_snapshot pattern so that both SessionStart and
-    PreCompact hooks have one Python entry point — no separate helper script.
+    Decision tree:
+      1. Active in-progress task in tasks.yaml → emit the resume brief
+      2. No active, but an eligible next task exists → emit a "your next action
+         is `roadrunner start ...`" directive followed by the brief
+      3. Blocked tasks but none eligible → report the blocked list
+      4. All tasks done → prompt for ROADMAP_COMPLETE sentinel
+      5. Tasks.yaml unreadable or empty → silent no-op (don't poison context)
+
+    Reads live state from tasks.yaml rather than the snapshot file so a stale
+    or missing snapshot can't produce a misleading directive.
     """
-    snap_path = ROOT / ".context_snapshot.json"
-    if not snap_path.exists():
-        return
     try:
-        snap = json.loads(snap_path.read_text())
-    except (OSError, json.JSONDecodeError):
+        tasks = load_tasks()
+    except (FileNotFoundError, ValueError):
+        # No roadmap present (or malformed) — stay silent.
+        return
+    if not tasks:
         return
 
-    parts = []
-    if snap.get("current_task"):
-        parts.append(f"Current task: {snap['current_task']}")
-    if snap.get("next_eligible"):
-        parts.append(f"Next eligible: {snap['next_eligible']}")
-    if snap.get("iteration"):
-        parts.append(f"Iteration: {snap['iteration']}")
-    if snap.get("status_summary"):
-        summary = ", ".join(f"{k}={v}" for k, v in snap["status_summary"].items())
-        parts.append(f"Status: {summary}")
+    state = read_state()
+    iteration = state.get("iteration", 0) + 1
 
-    if not parts:
-        return
+    in_flight = active_task(tasks)
+    if in_flight is not None:
+        brief = _build_task_brief(in_flight, iteration, 50, resume=True)
+        message = (
+            "You are resuming a roadrunner-driven session. A task is in "
+            "progress — continue from where it left off.\n\n" + brief
+        )
+    else:
+        next_task = next_eligible_task(tasks)
+        if next_task is not None:
+            brief = _build_task_brief(next_task, iteration, 50, resume=False)
+            message = (
+                "You are resuming a roadrunner-driven session. No task is "
+                "in progress. Your first action:\n\n"
+                f"    python3 roadrunner.py start {next_task['id']}\n\n"
+                "Then follow the brief below.\n\n" + brief
+            )
+        else:
+            blocked = [t.get("id") for t in tasks if t.get("status") == "blocked"]
+            if blocked:
+                message = (
+                    "Roadrunner session resumed, but no tasks are eligible. "
+                    f"Blocked tasks: {blocked}. Investigate each blocker, or "
+                    "output `ROADMAP_COMPLETE` on its own line to halt."
+                )
+            else:
+                remaining = [t.get("id") for t in tasks if t.get("status") != "done"]
+                if remaining:
+                    message = (
+                        "Roadrunner session resumed. No tasks are eligible "
+                        f"but these aren't done: {remaining}. Check dependencies "
+                        "and status in tasks/tasks.yaml."
+                    )
+                else:
+                    message = (
+                        "Roadrunner session resumed. All tasks are done. "
+                        "Output `ROADMAP_COMPLETE` on its own line as the last "
+                        "line of your next message to halt the loop cleanly."
+                    )
 
     print(
         json.dumps(
             {
                 "hookSpecificOutput": {
                     "hookEventName": "SessionStart",
-                    "additionalContext": "Roadmap snapshot: " + " | ".join(parts),
+                    "additionalContext": message,
                 }
             },
             ensure_ascii=False,

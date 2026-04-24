@@ -1229,23 +1229,59 @@ class TestUtf8Roundtrip:
 
 
 class TestSessionStart:
-    def test_session_start_without_snapshot_is_silent(self, tmp_project, capsys):
-        # No .context_snapshot.json → no stdout, no exception.
-        snap_path = tmp_project / ".context_snapshot.json"
-        if snap_path.exists():
-            snap_path.unlink()
-        roadrunner.cmd_session_start(argparse.Namespace())
-        assert capsys.readouterr().out == ""
+    """ROAD-028: SessionStart emits an INSTRUCTION, not ambient status, so the
+    agent can start working on turn 1 without the user typing 'Begin'.
 
-    def test_session_start_with_snapshot_emits_additional_context(self, tmp_project, capsys):
-        roadrunner.write_context_snapshot()
+    Decision tree covered: no tasks file / no tasks / in-progress / eligible
+    next / blocked / all-done."""
+
+    def _run(self, capsys):
         roadrunner.cmd_session_start(argparse.Namespace())
-        out = capsys.readouterr().out.strip()
+        return capsys.readouterr().out.strip()
+
+    def test_silent_when_tasks_file_absent(self, tmp_project, capsys):
+        # tmp_project created tasks.yaml; remove it to exercise the "no file" path.
+        roadrunner.TASKS_FILE.unlink()
+        assert self._run(capsys) == ""
+
+    def test_eligible_task_produces_start_instruction(self, tmp_project, capsys):
+        # tmp_project has TASK-001=done, TASK-002=todo (eligible).
+        out = self._run(capsys)
         data = json.loads(out)
+        ctx = data["hookSpecificOutput"]["additionalContext"]
         assert data["hookSpecificOutput"]["hookEventName"] == "SessionStart"
-        assert "Roadmap snapshot" in data["hookSpecificOutput"]["additionalContext"]
+        assert "python3 roadrunner.py start TASK-002" in ctx
+        # Should be directive, not passive status
+        assert "Your first action" in ctx or "first action" in ctx.lower()
 
-    def test_session_start_with_corrupt_snapshot_is_silent(self, tmp_project, capsys):
-        (tmp_project / ".context_snapshot.json").write_text("{not json!!")
-        roadrunner.cmd_session_start(argparse.Namespace())
-        assert capsys.readouterr().out == ""
+    def test_in_progress_task_produces_resume_brief(self, tmp_project, capsys):
+        tasks = roadrunner.load_tasks()
+        for t in tasks:
+            if t.get("id") == "TASK-002":
+                t["status"] = "in_progress"
+        roadrunner.save_tasks(tasks)
+        out = self._run(capsys)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "RESUME" in ctx.upper()
+        assert "TASK-002" in ctx
+
+    def test_all_done_prompts_for_completion_sentinel(self, tmp_project, capsys):
+        tasks = roadrunner.load_tasks()
+        for t in tasks:
+            t["status"] = "done"
+        roadrunner.save_tasks(tasks)
+        out = self._run(capsys)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "ROADMAP_COMPLETE" in ctx
+        assert "All tasks are done" in ctx
+
+    def test_blocked_tasks_are_reported(self, tmp_project, capsys):
+        tasks = roadrunner.load_tasks()
+        for t in tasks:
+            if t.get("status") != "done":
+                t["status"] = "blocked"
+        roadrunner.save_tasks(tasks)
+        out = self._run(capsys)
+        ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
+        assert "Blocked" in ctx or "blocked" in ctx
+        assert "TASK-002" in ctx or "TASK-003" in ctx
