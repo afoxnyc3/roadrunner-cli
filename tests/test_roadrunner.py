@@ -869,6 +869,66 @@ class TestGitBranching:
         assert roadrunner.merge_task_branch("TASK-DOESNOTEXIST", "main") is True
 
 
+class TestProjectBase:
+    """ROAD-025: cmd_start must branch from the configured project_base, not from
+    whatever branch HEAD happens to be. This prevents the stacking pattern
+    where task N's branch forks from task N-1's branch."""
+
+    def test_get_project_base_reads_from_tasks_yaml(self, tmp_project):
+        # tmp_project writes tasks.yaml without project_base; fallback kicks in.
+        # Rewrite it with an explicit project_base key.
+        import yaml as _yaml
+        existing = _yaml.safe_load(roadrunner.TASKS_FILE.read_text())
+        existing["project_base"] = "develop"
+        roadrunner.TASKS_FILE.write_text(_yaml.safe_dump(existing, sort_keys=False))
+        assert roadrunner.get_project_base() == "develop"
+
+    def test_get_project_base_falls_back_without_key(self, tmp_project, monkeypatch):
+        # No project_base in the file → falls back to _current_branch() or "main"
+        monkeypatch.setattr(roadrunner, "_current_branch", lambda: None)
+        assert roadrunner.get_project_base() == "main"
+
+    def test_create_task_branch_forks_from_base_not_current_head(self, tmp_git_project):
+        # Simulate a previous task branch sitting on top: HEAD moves to it.
+        root = tmp_git_project
+        assert roadrunner.create_task_branch("TASK-PREV", base_branch="main") is True
+        (root / "prev.txt").write_text("prev\n")
+        subprocess.run(["git", "add", "prev.txt"], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "prev task work"], cwd=root, check=True)
+        # We are now on roadrunner/TASK-PREV with a divergent commit.
+        # Create the next task branch with explicit base=main — it must NOT
+        # include prev.txt (i.e., must branch from main, not from HEAD).
+        assert roadrunner.create_task_branch("TASK-NEXT", base_branch="main") is True
+        assert not (root / "prev.txt").exists(), \
+            "TASK-NEXT must fork from main; prev.txt from TASK-PREV must be absent"
+
+
+class TestCompleteClearsState:
+    """ROAD-023: cmd_complete must clear current_task_id in .roadmap_state.json
+    so SessionStart / check_stop don't read a stale pointer to a just-done task."""
+
+    def test_complete_nulls_current_task_id(self, tmp_git_project):
+        # Seed state as if a task had been started
+        roadrunner.write_state(
+            "TASK-002", 3, {"TASK-002": 1}, extra={"base_branch": "main"}
+        )
+        # Sanity check the seed
+        assert roadrunner.read_state().get("current_task_id") == "TASK-002"
+
+        args = argparse.Namespace(task_id="TASK-002", notes="finished")
+        try:
+            roadrunner.cmd_complete(args)
+        except SystemExit as exc:
+            # complete exits 0 on success; non-zero means validation failed.
+            assert exc.code in (None, 0), f"cmd_complete errored with code {exc.code}"
+
+        state = roadrunner.read_state()
+        assert state.get("current_task_id") is None, "current_task_id must clear"
+        # Iteration and attempts survive — they're loop-lifetime, not task-lifetime.
+        assert state.get("iteration") == 3
+        assert state.get("attempts_per_task", {}).get("TASK-002") == 1
+
+
 # ── Schema version (M2) ──────────────────────────────────────────────────────
 
 

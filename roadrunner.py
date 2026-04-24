@@ -150,6 +150,39 @@ def load_tasks() -> list[Task]:
     return cast(list[Task], tasks)
 
 
+def load_project_config() -> dict:
+    """Read top-level config keys from tasks.yaml (everything except `tasks`).
+
+    Returns {} if the file is missing or unparseable — this helper is best-effort
+    and never raises, so reads can be done defensively from any code path.
+    """
+    try:
+        with open(TASKS_FILE) as f:
+            data = yaml.safe_load(f) or {}
+    except (FileNotFoundError, OSError, yaml.YAMLError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if k != "tasks"}
+
+
+def get_project_base() -> str:
+    """Resolve the base branch task branches should fork from.
+
+    Priority:
+      1. `project_base` key in tasks.yaml (top-level) — explicit config, preferred
+      2. Current git branch at the moment of call — legacy behavior pre-ROAD-025
+      3. "main" — final fallback
+
+    Setting `project_base` in tasks.yaml is how users opt out of the stacking
+    pattern where task branches fork from whatever previous task branch was HEAD.
+    """
+    configured = load_project_config().get("project_base")
+    if isinstance(configured, str) and configured:
+        return configured
+    return _current_branch() or "main"
+
+
 def _rotate_task_backups() -> None:
     """Shift rolling backups: .bak.N-1 → .bak.N, overwriting the oldest atomically.
 
@@ -262,18 +295,33 @@ def task_branch_name(task_id: str) -> str:
     return f"roadrunner/{task_id}"
 
 
-def create_task_branch(task_id: str) -> bool:
-    """Create a task branch from current HEAD. Returns True if created, False if git unavailable."""
+def create_task_branch(task_id: str, base_branch: str | None = None) -> bool:
+    """Create a task branch. Returns True if created (or already exists), False on git errors.
+
+    If base_branch is provided and exists, checks it out BEFORE creating the task
+    branch — this prevents stacking. Without this, calling start on a new task while
+    HEAD is still on a previous task branch would create the new branch atop the old,
+    producing a stack instead of a fan-out from the project base.
+    """
     if not _is_git_repo():
         return False
     branch = task_branch_name(task_id)
     if _branch_exists(branch):
         return True
+    if base_branch and _branch_exists(base_branch):
+        checkout = _git("checkout", base_branch, check=False)
+        if checkout.returncode != 0:
+            trace_event(
+                "git_base_checkout_error",
+                task_id=task_id,
+                extra={"base": base_branch, "stderr": checkout.stderr.strip()[:200]},
+            )
+            # Fall through — we'll still try to branch from whatever HEAD is.
     result = _git("checkout", "-b", branch, check=False)
     if result.returncode != 0:
         trace_event("git_branch_error", task_id=task_id, extra={"stderr": result.stderr.strip()[:200]})
         return False
-    trace_event("git_branch_create", task_id=task_id, extra={"branch": branch})
+    trace_event("git_branch_create", task_id=task_id, extra={"branch": branch, "base": base_branch})
     return True
 
 
@@ -696,8 +744,10 @@ def cmd_start(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     state = read_state()
-    # Record base branch before creating task branch
-    base_branch = _current_branch() or "main"
+    # Record base branch before creating task branch. Prefer the configured
+    # project_base from tasks.yaml over _current_branch() to avoid stacking
+    # task branches on top of previous task branches (ROAD-025).
+    base_branch = get_project_base()
     task["status"] = "in_progress"
     save_tasks(tasks)
     write_state(
@@ -707,7 +757,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         extra={"base_branch": base_branch},
     )
     append_changelog(args.task_id, "in_progress")
-    branched = create_task_branch(args.task_id)
+    branched = create_task_branch(args.task_id, base_branch=base_branch)
     trace_event(
         "task_start",
         task_id=args.task_id,
@@ -763,6 +813,15 @@ def cmd_complete(args: argparse.Namespace) -> None:
     # Merge task branch back to base if it exists
     base_branch = state.get("base_branch", "main")
     merged = merge_task_branch(args.task_id, base_branch)
+    # Clear current_task_id so SessionStart / check_stop don't read a stale
+    # "resume this done task" pointer on the next fire. Preserve iteration,
+    # attempts, and base_branch for continuity.
+    write_state(
+        None,
+        state.get("iteration", 0),
+        state.get("attempts_per_task", {}),
+        extra={"base_branch": base_branch} if base_branch else None,
+    )
     trace_event(
         "task_complete",
         task_id=args.task_id,
@@ -941,6 +1000,10 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
 
 
 _INIT_TASKS_TEMPLATE = """\
+# project_base: branch that task branches fork from (prevents stacking).
+# Task branches auto-merge back into this on `roadrunner complete`.
+project_base: main
+
 tasks:
   - id: TASK-001
     title: "First task — replace me"
