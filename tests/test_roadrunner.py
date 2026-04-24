@@ -492,12 +492,33 @@ class TestCheckStop:
         output = captured.getvalue().strip()
         return json.loads(output) if output else None
 
-    def test_stop_hook_active_allows_stop(self, tmp_project):
+    def test_stop_hook_active_still_drives_loop_when_work_remains(self, tmp_project):
+        """stop_hook_active is a hint, not a hard stop. If there's still eligible
+        work, the hook keeps driving — the iteration cap and per-task auto-block
+        are the real safety nets against runaway loops. Regression test for the
+        'loop stops after every task or two' failure mode seen on the external
+        entra-triage pilot."""
         roadrunner.write_state(None, 0)
         result = self._capture_check_stop(
             tmp_project, {"stop_hook_active": True, "last_assistant_message": "test"}
         )
-        assert result is None
+        assert result is not None, "hook should keep driving when work remains"
+        assert result.get("decision") == "block"
+        assert "TASK-002" in result.get("reason", ""), "should inject next-task brief"
+
+    def test_stop_hook_active_allows_stop_when_roadmap_finished(self, tmp_project):
+        """The one case where stop_hook_active still short-circuits: genuinely
+        nothing left to do (no active task, no eligible next)."""
+        # Mark every task done so neither active_task nor next_eligible_task returns anything.
+        tasks = roadrunner.load_tasks()
+        for t in tasks:
+            t["status"] = "done"
+        roadrunner.save_tasks(tasks)
+        roadrunner.write_state(None, 0)
+        result = self._capture_check_stop(
+            tmp_project, {"stop_hook_active": True, "last_assistant_message": "test"}
+        )
+        assert result is None, "with no work remaining + hook-loop signal, allow stop"
 
     def test_completion_signal_allows_stop(self, tmp_project):
         roadrunner.write_state(None, 0)

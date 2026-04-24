@@ -818,9 +818,16 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
     except Exception:
         stdin_data = {}
 
-    # Guard: if already looping from hook, allow stop
-    if stdin_data.get("stop_hook_active"):
-        sys.exit(0)
+    # stop_hook_active is Claude Code's signal that a previous hook invocation
+    # in this session already blocked-and-continued. Historically we early-exited
+    # on this to avoid infinite loops, but that killed legitimate multi-task
+    # runs the moment the flag flipped true — the loop would stop after the
+    # first task boundary and the user would have to restart the session to
+    # move on. Treat the flag as a hint: only allow stop if the roadmap is
+    # genuinely finished (no active task, no eligible next task). Otherwise
+    # fall through to normal decision logic — the iteration cap and per-task
+    # auto-block (5 attempts) are the real safety nets against runaway loops.
+    hook_looping = bool(stdin_data.get("stop_hook_active"))
 
     # Serialize concurrent Stop-hook fires so the read→increment→write span in the
     # body below is atomic. SystemExit from any sys.exit() still releases the lock
@@ -853,6 +860,13 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
 
         tasks = load_tasks()
         last_msg = stdin_data.get("last_assistant_message", "")
+
+        # If Claude Code flagged this fire as a potential hook loop AND there is
+        # genuinely nothing left to do (no active task, no eligible next task),
+        # allow the stop. Otherwise we ignore the flag and keep driving — stalled
+        # sessions still get caught by the iteration cap below.
+        if hook_looping and not active_task(tasks) and not next_eligible_task(tasks):
+            sys.exit(0)
 
         # Completion signal: Claude outputs ROADMAP_COMPLETE as the last non-empty line
         if is_completion_signal(last_msg):
