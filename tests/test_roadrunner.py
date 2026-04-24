@@ -869,6 +869,97 @@ class TestGitBranching:
         assert roadrunner.merge_task_branch("TASK-DOESNOTEXIST", "main") is True
 
 
+class TestPushOnComplete:
+    """ROAD-031: after a successful merge, push per push_on_complete config.
+    Defaults to 'none' (back-compat). Push failures never fail the task."""
+
+    def _with_origin(self, tmp_git_project, tmp_path_factory):
+        """Wire a bare repo as origin so pushes actually land."""
+        bare = tmp_path_factory.mktemp("origin.git")
+        subprocess.run(["git", "init", "--bare", "-q"], cwd=bare, check=True)
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(bare)],
+            cwd=tmp_git_project, check=True,
+        )
+        subprocess.run(
+            ["git", "push", "-q", "origin", "main"],
+            cwd=tmp_git_project, check=True,
+        )
+        return bare
+
+    def _set_push_mode(self, mode):
+        import yaml as _yaml
+        data = _yaml.safe_load(roadrunner.TASKS_FILE.read_text()) or {}
+        data["push_on_complete"] = mode
+        roadrunner.TASKS_FILE.write_text(_yaml.safe_dump(data, sort_keys=False))
+
+    def _make_task_branch_with_work(self, root, task_id, filename):
+        subprocess.run(["git", "checkout", "-q", "-b", f"roadrunner/{task_id}"], cwd=root, check=True)
+        (root / filename).write_text("content\n")
+        subprocess.run(["git", "add", filename], cwd=root, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", f"work on {task_id}"], cwd=root, check=True)
+        subprocess.run(["git", "checkout", "-q", "main"], cwd=root, check=True)
+
+    def test_default_none_does_not_push(self, tmp_git_project, tmp_path_factory):
+        bare = self._with_origin(tmp_git_project, tmp_path_factory)
+        # Default: no push_on_complete key in tasks.yaml
+        self._make_task_branch_with_work(tmp_git_project, "TASK-050", "f.txt")
+        assert roadrunner.merge_task_branch("TASK-050", "main") is True
+        # Origin main should NOT have the new commit
+        origin_log = subprocess.run(
+            ["git", "--git-dir", str(bare), "log", "main", "--oneline"],
+            capture_output=True, text=True,
+        ).stdout
+        assert "work on TASK-050" not in origin_log
+
+    def test_base_pushes_base_branch(self, tmp_git_project, tmp_path_factory):
+        bare = self._with_origin(tmp_git_project, tmp_path_factory)
+        self._set_push_mode("base")
+        self._make_task_branch_with_work(tmp_git_project, "TASK-051", "g.txt")
+        assert roadrunner.merge_task_branch("TASK-051", "main") is True
+        origin_log = subprocess.run(
+            ["git", "--git-dir", str(bare), "log", "main", "--oneline"],
+            capture_output=True, text=True,
+        ).stdout
+        assert "work on TASK-051" in origin_log
+        # Task branch should NOT be on remote under 'base' mode
+        origin_branches = subprocess.run(
+            ["git", "--git-dir", str(bare), "branch", "--list"],
+            capture_output=True, text=True,
+        ).stdout
+        assert "roadrunner/TASK-051" not in origin_branches
+
+    def test_task_pushes_task_branch_only(self, tmp_git_project, tmp_path_factory):
+        bare = self._with_origin(tmp_git_project, tmp_path_factory)
+        self._set_push_mode("task")
+        self._make_task_branch_with_work(tmp_git_project, "TASK-052", "h.txt")
+        assert roadrunner.merge_task_branch("TASK-052", "main") is True
+        origin_branches = subprocess.run(
+            ["git", "--git-dir", str(bare), "branch", "--list"],
+            capture_output=True, text=True,
+        ).stdout
+        assert "roadrunner/TASK-052" in origin_branches
+
+    def test_push_failure_does_not_fail_merge(self, tmp_git_project, monkeypatch, capsys):
+        # No origin configured → push will fail. Merge must still succeed.
+        self._set_push_mode("base")
+        self._make_task_branch_with_work(tmp_git_project, "TASK-053", "i.txt")
+        assert roadrunner.merge_task_branch("TASK-053", "main") is True
+        err = capsys.readouterr().err
+        assert "Push to origin/main failed" in err
+
+    def test_invalid_mode_treated_as_none(self, tmp_git_project, tmp_path_factory):
+        bare = self._with_origin(tmp_git_project, tmp_path_factory)
+        self._set_push_mode("garbage")
+        self._make_task_branch_with_work(tmp_git_project, "TASK-054", "j.txt")
+        assert roadrunner.merge_task_branch("TASK-054", "main") is True
+        origin_log = subprocess.run(
+            ["git", "--git-dir", str(bare), "log", "main", "--oneline"],
+            capture_output=True, text=True,
+        ).stdout
+        assert "work on TASK-054" not in origin_log
+
+
 class TestCommitScopeAware:
     """ROAD-021: cmd_commit stages only files in the task's files_expected +
     roadrunner overlay (logs/, tasks.yaml*, .reset_*). Refuses to commit when

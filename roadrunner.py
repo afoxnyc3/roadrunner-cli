@@ -325,12 +325,55 @@ def create_task_branch(task_id: str, base_branch: str | None = None) -> bool:
     return True
 
 
+def _push_branch(branch: str, task_id: str | None = None) -> bool:
+    """Push a branch to origin. Non-fatal: logs to trace and prints a warning
+    on failure (no authentication, protected branch, conflict, etc.) and
+    returns False. Never raises, never exits — push failures must not fail
+    a task that's otherwise valid."""
+    result = _git("push", "origin", branch, check=False)
+    passed = result.returncode == 0
+    trace_event(
+        "git_push",
+        task_id=task_id,
+        extra={
+            "branch": branch,
+            "returncode": result.returncode,
+            "stderr": "" if passed else result.stderr.strip()[:200],
+        },
+    )
+    if not passed:
+        print(
+            f"⚠️  Push to origin/{branch} failed: {result.stderr.strip()[:200]}",
+            file=sys.stderr,
+        )
+    return passed
+
+
+def _configured_push_mode() -> str:
+    """Return push_on_complete from tasks.yaml config. Defaults to 'none'
+    for back-compat with existing projects that haven't opted in."""
+    mode = load_project_config().get("push_on_complete", "none")
+    if not isinstance(mode, str):
+        return "none"
+    mode = mode.lower().strip()
+    if mode not in ("none", "base", "task", "both"):
+        return "none"
+    return mode
+
+
 def merge_task_branch(task_id: str, base_branch: str) -> bool:
     """Merge task branch back to base and delete it. Returns True on success.
 
     On merge failure (e.g. conflict), runs `git merge --abort` so the repo is
     returned to a clean state. The task branch is left intact for manual
     resolution.
+
+    After a successful merge, honors `push_on_complete` from tasks.yaml:
+      - `base` — push origin/<base_branch>
+      - `task` — push origin/<task_branch> before deleting it
+      - `both` — push both
+      - `none` (default) — no push, local-only
+    Push failures are non-fatal; see _push_branch.
     """
     if not _is_git_repo():
         return False
@@ -365,8 +408,14 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
             },
         )
         return False
+    push_mode = _configured_push_mode()
+    # Push task branch BEFORE deleting it locally.
+    if push_mode in ("task", "both"):
+        _push_branch(branch, task_id=task_id)
     _git("branch", "-d", branch, check=False)
     trace_event("git_branch_merge", task_id=task_id, extra={"branch": branch, "into": base_branch})
+    if push_mode in ("base", "both"):
+        _push_branch(base_branch, task_id=task_id)
     return True
 
 
@@ -1129,6 +1178,13 @@ _INIT_TASKS_TEMPLATE = """\
 # project_base: branch that task branches fork from (prevents stacking).
 # Task branches auto-merge back into this on `roadrunner complete`.
 project_base: main
+
+# push_on_complete: what to push to origin after a successful merge.
+#   base — push project_base (origin tracks your local main as tasks land)
+#   task — push the task branch before delete (keeps per-task history remote)
+#   both — push both
+#   none — local-only (offline / no remote configured)
+push_on_complete: base
 
 tasks:
   - id: TASK-001
