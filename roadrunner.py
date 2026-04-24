@@ -857,6 +857,132 @@ def cmd_reset(args: argparse.Namespace) -> None:
     print(f"Reset marker written for {args.task_id}.")
 
 
+# ── Scope-aware commit (ROAD-021) ─────────────────────────────────────────────
+
+# Files outside a task's `files_expected` that are still legitimately part of a
+# task commit. These are the artifacts roadrunner itself writes: status updates,
+# work logs, boundary markers, backup rotations.
+_COMMIT_OVERLAY_PREFIXES: tuple[str, ...] = (
+    "logs/",
+    "tasks/tasks.yaml",  # covers tasks.yaml, tasks.yaml.bak, tasks.yaml.bak.N
+    ".reset_",           # any task's boundary marker — audit trail
+)
+
+_VALID_COMMIT_TYPES: frozenset[str] = frozenset(
+    {"feat", "fix", "chore", "docs", "refactor", "test", "perf", "style", "ci", "build"}
+)
+
+
+def _parse_porcelain(output: str) -> list[tuple[str, str]]:
+    """Parse `git status --porcelain` output into (status_code, path) tuples.
+
+    For renames (`R  old -> new`), returns the new path — that's what we want
+    to stage. Lines shorter than 3 chars are skipped (shouldn't happen but
+    defensive against edge cases).
+    """
+    entries: list[tuple[str, str]] = []
+    for line in output.splitlines():
+        if len(line) < 3:
+            continue
+        status = line[:2]
+        rest = line[3:]
+        if " -> " in rest:
+            _, path = rest.split(" -> ", 1)
+        else:
+            path = rest
+        entries.append((status, path))
+    return entries
+
+
+def _is_in_commit_scope(path: str, files_expected: set[str]) -> bool:
+    """A path belongs in a task commit if it's in files_expected OR matches
+    the roadrunner overlay (logs/, tasks.yaml*, .reset_*)."""
+    if path in files_expected:
+        return True
+    return any(path.startswith(prefix) for prefix in _COMMIT_OVERLAY_PREFIXES)
+
+
+def cmd_commit(args: argparse.Namespace) -> None:
+    """Scope-aware commit wrapper. Stages only files in the task's declared
+    `files_expected` plus the roadrunner overlay, refusing if anything out of
+    scope is dirty. Replaces the unsafe `git add -A && git commit` pattern that
+    sweeps unrelated changes into task commits (observed in the entra-triage
+    pilot, b21c768)."""
+    tasks = load_tasks()
+    task = get_task(tasks, args.task_id)
+    if task is None:
+        print(f"Task {args.task_id} not found in tasks.yaml.", file=sys.stderr)
+        sys.exit(1)
+
+    if not _is_git_repo():
+        print("Not a git repository; nothing to commit.", file=sys.stderr)
+        sys.exit(1)
+
+    commit_type = args.type or "feat"
+    if commit_type not in _VALID_COMMIT_TYPES:
+        print(
+            f"Invalid --type {commit_type!r}. Must be one of: "
+            f"{', '.join(sorted(_VALID_COMMIT_TYPES))}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    status_out = _git("status", "--porcelain", check=False)
+    if status_out.returncode != 0:
+        print(f"git status failed: {status_out.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    files_expected = set(task.get("files_expected") or [])
+    in_scope: list[str] = []
+    out_of_scope: list[str] = []
+    for _status, path in _parse_porcelain(status_out.stdout):
+        if _is_in_commit_scope(path, files_expected):
+            in_scope.append(path)
+        else:
+            out_of_scope.append(path)
+
+    if out_of_scope:
+        print(f"❌ Refusing to commit {args.task_id}: out-of-scope files are dirty.\n", file=sys.stderr)
+        print("These files are not in the task's files_expected and not part of the", file=sys.stderr)
+        print("roadrunner overlay (logs/, tasks/tasks.yaml*, .reset_*):\n", file=sys.stderr)
+        for path in out_of_scope:
+            print(f"  {path}", file=sys.stderr)
+        print(
+            "\nResolve one of three ways:\n"
+            "  (a) add them to the task's files_expected in tasks/tasks.yaml\n"
+            "  (b) git stash them — they belong in a separate commit\n"
+            "  (c) git checkout -- <path> to discard (destructive)\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if not in_scope:
+        print(f"Nothing to commit for {args.task_id} (working tree clean).")
+        return
+
+    add_result = _git("add", "--", *in_scope, check=False)
+    if add_result.returncode != 0:
+        print(f"git add failed: {add_result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    title = str(task.get("title") or args.task_id).strip()
+    subject = f"{commit_type}({args.task_id}): {title}"
+    message = subject if not args.notes else f"{subject}\n\n{args.notes}"
+
+    commit_result = _git("commit", "-m", message, check=False)
+    if commit_result.returncode != 0:
+        print(f"git commit failed: {commit_result.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    trace_event(
+        "task_commit",
+        task_id=args.task_id,
+        extra={"files": in_scope, "type": commit_type},
+    )
+    print(f"✅ Committed {args.task_id}: {subject}")
+    print(f"   {len(in_scope)} file(s) staged + committed")
+
+
 def cmd_health(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     eligible = [t for t in tasks if is_eligible(t, tasks)]
@@ -1022,19 +1148,45 @@ tasks:
 _INIT_CLAUDE_MD_TEMPLATE = """\
 # CLAUDE.md — Roadmap Loop Agent Brief
 
-You are executing a deterministic roadmap. Python owns control. You own implementation.
-One task per cycle. No side quests. No skipping ahead.
+You are executing a deterministic roadmap. Python owns control. You own
+implementation. One task per cycle. No side quests. No skipping ahead.
 
 ## Each cycle
-1. `python3 roadrunner.py next`
-2. `python3 roadrunner.py start TASK-XXX`
-3. Implement inside the task boundary
-4. `python3 roadrunner.py validate TASK-XXX`
-5. `python3 roadrunner.py complete TASK-XXX --notes "..."`
-6. `python3 roadrunner.py reset TASK-XXX --summary "..."`
 
-When every task is `done` and nothing is eligible, output the sentinel
-`ROADMAP_COMPLETE` on its own line as the last line of your message.
+1. `python3 roadrunner.py next` — shows the next eligible task
+2. `python3 roadrunner.py start TASK-XXX` — creates `roadrunner/TASK-XXX` from
+   the project base and switches to it
+3. Implement, staying strictly inside the task's `files_expected`
+4. `python3 roadrunner.py validate TASK-XXX` — run every validation command;
+   they must all exit 0
+5. `python3 roadrunner.py complete TASK-XXX --notes "what you did"` — marks
+   done, merges the task branch back to base
+6. `python3 roadrunner.py commit TASK-XXX --notes "..."` — stages only files
+   in `files_expected` + roadrunner overlay (logs/, tasks.yaml, .reset_*) and
+   commits with a conventional message. **Do not use `git add -A`** — it
+   sweeps unrelated changes into your task commit. If the commit refuses,
+   fix the out-of-scope files (stash, add to files_expected, or discard).
+7. `python3 roadrunner.py reset TASK-XXX --summary "one-line"` — writes the
+   boundary marker for the next task
+
+## Completion signal
+
+When every task is `done` and `next` reports nothing eligible, output the
+sentinel `ROADMAP_COMPLETE` on its own line as the last non-empty line of
+your message. This halts the loop cleanly.
+
+## Auto-block
+
+If you resume the same task 5 times without completing it, the Stop hook will
+auto-block it and move on. If you hit a real blocker earlier than that,
+`python3 roadrunner.py block TASK-XXX --notes "why"` is the explicit path.
+
+## File scope
+
+Only edit files listed in the current task's `files_expected` and
+`documentation_targets`. If something outside scope needs changing, note it
+in the task's `--notes` or open a follow-up task — don't silently expand
+scope.
 """
 
 
@@ -1366,6 +1518,18 @@ def main() -> None:
         help="Path to a tasks.yaml file (defaults to the project tasks/tasks.yaml)",
     )
 
+    p_commit = sub.add_parser(
+        "commit",
+        help="Scope-aware commit: stages only files in the task's files_expected + roadrunner overlay",
+    )
+    p_commit.add_argument("task_id")
+    p_commit.add_argument("--notes", default="", help="Commit body (subject auto-generated from task)")
+    p_commit.add_argument(
+        "--type",
+        default=None,
+        help="Conventional commit type (feat/fix/chore/docs/refactor/test/...). Defaults to 'feat'.",
+    )
+
     args = parser.parse_args()
 
     dispatch = {
@@ -1382,6 +1546,7 @@ def main() -> None:
         "session-start": cmd_session_start,
         "init": cmd_init,
         "analyze": cmd_analyze,
+        "commit": cmd_commit,
     }
 
     if args.command not in dispatch:

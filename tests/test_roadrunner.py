@@ -869,6 +869,112 @@ class TestGitBranching:
         assert roadrunner.merge_task_branch("TASK-DOESNOTEXIST", "main") is True
 
 
+class TestCommitScopeAware:
+    """ROAD-021: cmd_commit stages only files in the task's files_expected +
+    roadrunner overlay (logs/, tasks.yaml*, .reset_*). Refuses to commit when
+    out-of-scope files are dirty. Regression test for the b21c768 failure mode
+    where `git add -A` swept unrelated doc edits into a task's commit."""
+
+    def _run_commit(self, task_id, notes="", type_=None):
+        args = argparse.Namespace(task_id=task_id, notes=notes, type=type_)
+        try:
+            roadrunner.cmd_commit(args)
+            return 0
+        except SystemExit as exc:
+            return exc.code if isinstance(exc.code, int) else 0
+
+    def _last_commit_subject(self, root):
+        out = subprocess.run(
+            ["git", "log", "-1", "--pretty=%s"], cwd=root, capture_output=True, text=True
+        )
+        return out.stdout.strip()
+
+    def test_commits_in_scope_files_only(self, tmg_with_task):
+        root, task_id = tmg_with_task
+        # File in files_expected + overlay file (logs/) — both legit.
+        (root / "a.py").write_text("print('a')\n")
+        (root / "logs").mkdir(exist_ok=True)
+        (root / "logs" / "TASK-002.md").write_text("# work log\n")
+        rc = self._run_commit(task_id)
+        assert rc == 0
+        subject = self._last_commit_subject(root)
+        assert subject.startswith(f"feat({task_id}):")
+
+    def test_refuses_out_of_scope_dirty_files(self, tmg_with_task, capsys):
+        root, task_id = tmg_with_task
+        (root / "a.py").write_text("print('a')\n")        # in scope
+        (root / "secret.env").write_text("API_KEY=...\n")  # OUT of scope
+        rc = self._run_commit(task_id)
+        assert rc != 0
+        err = capsys.readouterr().err
+        assert "secret.env" in err
+        assert "out-of-scope" in err.lower() or "out of scope" in err.lower()
+        # The in-scope file must NOT be committed (nothing staged on refusal).
+        status = subprocess.run(
+            ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True
+        ).stdout
+        assert "a.py" in status, "in-scope file should remain uncommitted when refused"
+
+    def test_no_dirty_files_is_noop(self, tmg_with_task, capsys):
+        root, task_id = tmg_with_task
+        rc = self._run_commit(task_id)
+        assert rc == 0
+        out = capsys.readouterr().out
+        assert "Nothing to commit" in out
+
+    def test_custom_type_flag(self, tmg_with_task):
+        root, task_id = tmg_with_task
+        (root / "a.py").write_text("x = 1\n")
+        rc = self._run_commit(task_id, type_="refactor")
+        assert rc == 0
+        assert self._last_commit_subject(root).startswith(f"refactor({task_id}):")
+
+    def test_invalid_type_rejected(self, tmg_with_task, capsys):
+        root, task_id = tmg_with_task
+        (root / "a.py").write_text("x = 1\n")
+        rc = self._run_commit(task_id, type_="garbage")
+        assert rc != 0
+        assert "Invalid --type" in capsys.readouterr().err
+
+    def test_notes_appear_in_commit_body(self, tmg_with_task):
+        root, task_id = tmg_with_task
+        (root / "a.py").write_text("x = 1\n")
+        rc = self._run_commit(task_id, notes="fixes ABC-123 per review")
+        assert rc == 0
+        body = subprocess.run(
+            ["git", "log", "-1", "--pretty=%B"], cwd=root, capture_output=True, text=True
+        ).stdout
+        assert "fixes ABC-123 per review" in body
+
+    def test_unknown_task_id_errors(self, tmg_with_task, capsys):
+        _root, _task_id = tmg_with_task
+        rc = self._run_commit("TASK-NONEXISTENT")
+        assert rc != 0
+        assert "not found" in capsys.readouterr().err.lower()
+
+
+@pytest.fixture
+def tmg_with_task(tmp_git_project):
+    """tmp_git_project plus a known TASK-002 whose files_expected is ['a.py'].
+
+    Baselines tasks/ and logs/ into the initial commit so the test tree looks
+    like a real post-`roadrunner init` project. Without this, git porcelain
+    reports `?? tasks/` (directory-level) instead of per-file, which defeats
+    the scope matcher.
+    """
+    tasks = roadrunner.load_tasks()
+    for t in tasks:
+        if t.get("id") == "TASK-002":
+            t["files_expected"] = ["a.py"]
+    roadrunner.save_tasks(tasks)
+    subprocess.run(["git", "add", "tasks/", "logs/"], cwd=tmp_git_project, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "baseline roadrunner scaffold"],
+        cwd=tmp_git_project, check=True,
+    )
+    return tmp_git_project, "TASK-002"
+
+
 class TestProjectBase:
     """ROAD-025: cmd_start must branch from the configured project_base, not from
     whatever branch HEAD happens to be. This prevents the stacking pattern
