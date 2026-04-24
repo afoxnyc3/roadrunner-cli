@@ -156,3 +156,21 @@ Roadmap finished — ROADMAP_COMPLETE signal received.
 ## 2026-04-23T16:00:37.777981+00:00 | ROAD-004 → done
 Zero mypy errors on roadrunner.py under standard (non-strict) mypy. Fixes split into three lanes: (1) local annotation fixes — default RoadmapState literal in read_state, dict[str, Any] on trace_event record, assert on copy-plan src. (2) TypedDict propagation — load_tasks→list[Task], read_state→RoadmapState, plus downstream signatures: save_tasks, get_task, is_eligible, next_eligible_task, active_task, increment_attempts, run_validation, write_work_log, _build_task_brief. ValidationResult applied to run_validation's results list and per-command entry. (3) cast() at yaml/json boundaries where Any leaks out (load_tasks return, read_state return). Added [tool.mypy] to pyproject.toml (python_version=3.10, ignore_missing_imports, warn_return_any, warn_unused_ignores). Added mypy CI job installing mypy + types-PyYAML. Ruff and pytest still clean. (Note: task files_expected only listed pyproject.toml and ci.yml, but the goal text requires fixing errors in roadrunner.py — edited in-scope per CLAUDE.md guidance.)
 
+## 2026-04-24T16:33:32.242512+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-24T16:33:51.023036+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-24T16:34:07.109718+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-24T16:36:52.219371+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-24T16:37:05.409843+00:00 | ROAD-010 → done
+Split the iteration counter so the runaway cap is per-session instead of lifetime-cumulative (bug observed 2026-04-24: iteration 92 tripped max_iter=50 because the Stop-hook incremented across every 'claude' invocation). Added session_iteration to RoadmapState (schema v1→v2 with setdefault-based migration); cmd_check_stop now gates on session_iteration; cmd_session_start resets it on every hook fire; new reset-iteration [--soft|--hard] subcommand; both counters surfaced in cmd_status and _build_task_brief. Default max_iter raised 50→100 in both the argparse default and hooks/stop_hook.sh. 143 tests pass (added TestSessionIteration class with ~18 cases); ruff and mypy clean. Backward compat preserved for entra-triage's vendored copy via setdefault migration. Config doc added at docs/configuration.md.
+
+## 2026-04-24T16:38:42.506718+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+

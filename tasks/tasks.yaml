@@ -352,7 +352,7 @@ tasks:
     \ their\nown project. Keep the example minimal \u2014 3 tasks, no external dependencies.\n"
 - id: ROAD-010
   title: "Per-session iteration counter with reset on SessionStart"
-  status: todo
+  status: done
   depends_on: []
   goal: "Split the iteration counter into two values so the runaway-protection cap\
     \ becomes\nper-session instead of lifetime-cumulative. Bug observed 2026-04-24:\

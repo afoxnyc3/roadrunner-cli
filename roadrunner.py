@@ -50,7 +50,8 @@ class Task(TypedDict, total=False):
 
 class RoadmapState(TypedDict, total=False):
     current_task_id: str | None
-    iteration: int
+    iteration: int              # lifetime-cumulative counter (audit trail)
+    session_iteration: int      # per-session counter; reset on SessionStart; gates the iteration cap
     attempts_per_task: dict[str, int]
     updated_at: str
     base_branch: str
@@ -85,7 +86,8 @@ MAX_TASK_ATTEMPTS = 5              # auto-block a task after this many resume cy
 TASKS_BACKUP_KEEP = 5              # number of rolling tasks.yaml.bak.N copies to retain
 LOG_ROTATE_BYTES = 10 * 1024 * 1024  # rotate when a log file exceeds 10 MB
 LOG_RETAIN_DAYS = 7                # delete rotated/compressed logs older than this
-STATE_SCHEMA_VERSION = 1           # bump when .roadmap_state.json format changes incompatibly
+STATE_SCHEMA_VERSION = 2           # bump when .roadmap_state.json format changes incompatibly
+                                   # v2 (ROAD-010): added session_iteration field; backward-compat via setdefault
 SNAPSHOT_SCHEMA_VERSION = 1        # bump when .context_snapshot.json format changes incompatibly
 
 # Built from two fragments so the sentinel string never appears literally in the source
@@ -496,11 +498,35 @@ def write_state(
     iteration: int,
     attempts: dict | None = None,
     extra: dict | None = None,
+    session_iteration: int | None = None,
 ) -> None:
+    """Persist roadmap state atomically.
+
+    `session_iteration` (ROAD-010): when None, preserve the value already on disk
+    (or default to 0 for a fresh state file). When set explicitly, overwrite.
+    This keeps existing call sites (cmd_start, cmd_complete, cmd_block, cmd_reset)
+    correct without threading the field through every signature — only the two
+    call sites that actually mutate the session counter (cmd_check_stop,
+    cmd_session_start) need to know about it.
+    """
+    if session_iteration is None:
+        existing = 0
+        if STATE_FILE.exists():
+            try:
+                data = json.loads(STATE_FILE.read_text())
+                if isinstance(data, dict):
+                    existing = int(data.get("session_iteration", 0))
+            except (OSError, json.JSONDecodeError, ValueError, TypeError):
+                existing = 0
+        effective_session_iter = existing
+    else:
+        effective_session_iter = session_iteration
+
     state = {
         "schema_version": STATE_SCHEMA_VERSION,
         "current_task_id": current_task_id,
         "iteration": iteration,
+        "session_iteration": effective_session_iter,
         "attempts_per_task": attempts or {},
         "updated_at": _now(),
     }
@@ -515,7 +541,12 @@ def write_state(
 
 
 def read_state() -> RoadmapState:
-    default: RoadmapState = {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
+    default: RoadmapState = {
+        "current_task_id": None,
+        "iteration": 0,
+        "session_iteration": 0,
+        "attempts_per_task": {},
+    }
     if not STATE_FILE.exists():
         return default
     try:
@@ -548,6 +579,9 @@ def read_state() -> RoadmapState:
     data.setdefault("attempts_per_task", {})
     data.setdefault("current_task_id", None)
     data.setdefault("iteration", 0)
+    # ROAD-010: older state files (schema v1) lack this field. Treat as 0 so
+    # the first Stop-hook fire after upgrade starts a fresh session window.
+    data.setdefault("session_iteration", 0)
     return cast(RoadmapState, data)
 
 
@@ -766,6 +800,14 @@ def cmd_status(args: argparse.Namespace) -> None:
     next_t = next_eligible_task(tasks)
     print(f"\nNext eligible: {next_t['id'] if next_t else 'None'}")
 
+    # ROAD-010: show both iteration counters so the operator can see which
+    # value gates the runaway cap vs. which is lifetime audit.
+    state = read_state()
+    lifetime_iter = state.get("iteration", 0)
+    session_iter = state.get("session_iteration", 0)
+    print(f"Iteration (session): {session_iter}")
+    print(f"Iteration (lifetime): {lifetime_iter}")
+
 
 def cmd_next(args: argparse.Namespace) -> None:
     tasks = load_tasks()
@@ -904,6 +946,55 @@ def cmd_reset(args: argparse.Namespace) -> None:
     write_context_snapshot()
     rotate_logs()
     print(f"Reset marker written for {args.task_id}.")
+
+
+def cmd_reset_iteration(args: argparse.Namespace) -> None:
+    """ROAD-010: explicit user control over the iteration counters.
+
+      --soft  zeros session_iteration only. Use after a runaway cap fire to
+              start a fresh session window without losing the lifetime audit
+              trail.
+
+      --hard  zeros both iteration (lifetime) and session_iteration. Use only
+              when fully restarting the roadmap (e.g. after a failed experiment
+              that you want to erase from the trace entirely). Destructive to
+              the audit counter.
+
+    Defaults to --soft if neither flag is given. The two flags are mutually
+    exclusive; hard wins if both are passed (argparse already warns, but we
+    guard explicitly for clarity).
+    """
+    hard = bool(getattr(args, "hard", False))
+    # --soft is the default; --hard is the explicit opt-in to nuke lifetime
+    with _exclusive_state_lock():
+        state = read_state()
+        new_lifetime = 0 if hard else state.get("iteration", 0)
+        write_state(
+            state.get("current_task_id"),
+            new_lifetime,
+            state.get("attempts_per_task"),
+            session_iteration=0,
+        )
+    trace_event(
+        "reset_iteration",
+        task_id=state.get("current_task_id"),
+        iteration=new_lifetime,
+        extra={
+            "mode": "hard" if hard else "soft",
+            "session_iteration": 0,
+            "previous_lifetime": state.get("iteration", 0),
+        },
+    )
+    mode = "hard" if hard else "soft"
+    if hard:
+        print(
+            f"reset-iteration ({mode}): session=0, lifetime=0 "
+            f"(was {state.get('iteration', 0)})"
+        )
+    else:
+        print(
+            f"reset-iteration ({mode}): session=0, lifetime={new_lifetime} (preserved)"
+        )
 
 
 # ── Scope-aware commit (ROAD-021) ─────────────────────────────────────────────
@@ -1068,24 +1159,45 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
     # via the context manager's finally.
     with _exclusive_state_lock():
         state = read_state()
+        # ROAD-010: two counters. `iteration` is lifetime-cumulative (audit trail,
+        # preserved across sessions); `session_iteration` resets on every
+        # SessionStart hook and is the one gated by --max-iterations. Prior to
+        # this change the lifetime counter was the cap — which meant that once
+        # it crossed the cap, every subsequent `claude` invocation halted on
+        # its first Stop fire. The cap is a runaway-protection primitive, not
+        # a project-lifetime ceiling.
         iteration = state.get("iteration", 0) + 1
+        session_iteration = state.get("session_iteration", 0) + 1
         attempts = state.get("attempts_per_task", {})
-        max_iter = int(args.max_iterations) if args.max_iterations else 50
+        max_iter = int(args.max_iterations) if args.max_iterations else 100
         max_attempts = int(args.max_attempts) if args.max_attempts else MAX_TASK_ATTEMPTS
-        write_state(state.get("current_task_id"), iteration, attempts)
+        write_state(
+            state.get("current_task_id"),
+            iteration,
+            attempts,
+            session_iteration=session_iteration,
+        )
         trace_event(
             "check_stop",
             task_id=state.get("current_task_id"),
             iteration=iteration,
-            extra={"max_iter": max_iter},
+            extra={
+                "max_iter": max_iter,
+                "session_iteration": session_iteration,
+            },
         )
 
-        if iteration >= max_iter:
+        if session_iteration >= max_iter:
             print(
                 json.dumps(
                     {
                         "continue": False,
-                        "stopReason": f"Max iterations ({max_iter}) reached. Roadmap loop halted.",
+                        "stopReason": (
+                            f"Max iterations ({max_iter}) reached for this session "
+                            f"(lifetime: {iteration}). Roadmap loop halted. "
+                            f"Use 'roadrunner reset-iteration --soft' to start a fresh "
+                            f"session window."
+                        ),
                     },
                     ensure_ascii=False,
                 )
@@ -1115,7 +1227,12 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
         in_flight = active_task(tasks)
         if in_flight:
             task_attempts = increment_attempts(state, in_flight["id"])
-            write_state(in_flight["id"], iteration, state["attempts_per_task"])
+            write_state(
+                in_flight["id"],
+                iteration,
+                state["attempts_per_task"],
+                session_iteration=session_iteration,
+            )
             if task_attempts >= max_attempts:
                 in_flight["status"] = "blocked"
                 save_tasks(tasks)
@@ -1136,13 +1253,15 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
                 )
                 print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
                 sys.exit(0)
-            brief = _build_task_brief(in_flight, iteration, max_iter, resume=True)
+            brief = _build_task_brief(
+                in_flight, session_iteration, max_iter, resume=True
+            )
             print(json.dumps({"decision": "block", "reason": brief}, ensure_ascii=False))
             sys.exit(0)
 
         next_task = next_eligible_task(tasks)
         if next_task:
-            brief = _build_task_brief(next_task, iteration, max_iter)
+            brief = _build_task_brief(next_task, session_iteration, max_iter)
             print(json.dumps({"decision": "block", "reason": brief}, ensure_ascii=False))
             sys.exit(0)
 
@@ -1481,11 +1600,33 @@ def cmd_session_start(args: argparse.Namespace) -> None:
         return
 
     state = read_state()
-    iteration = state.get("iteration", 0) + 1
+    iteration = state.get("iteration", 0)  # lifetime (display only, not incremented here)
+
+    # ROAD-010: SessionStart is the boundary that resets the per-session iteration
+    # counter. Persist the reset atomically so the first Stop-hook fire of the
+    # new session sees session_iteration=0 → 1 rather than carrying over the
+    # previous run's count.
+    with _exclusive_state_lock():
+        write_state(
+            state.get("current_task_id"),
+            iteration,
+            state.get("attempts_per_task"),
+            session_iteration=0,
+        )
+    trace_event(
+        "session_start_reset",
+        task_id=state.get("current_task_id"),
+        iteration=iteration,
+        extra={"session_iteration": 0},
+    )
+
+    # After reset, display starts from session_iteration=0; the first cap-check
+    # will see 1. Default session cap is 100 (ROAD-010).
+    session_display = 0
 
     in_flight = active_task(tasks)
     if in_flight is not None:
-        brief = _build_task_brief(in_flight, iteration, 50, resume=True)
+        brief = _build_task_brief(in_flight, session_display, 100, resume=True)
         message = (
             "You are resuming a roadrunner-driven session. A task is in "
             "progress — continue from where it left off.\n\n" + brief
@@ -1493,7 +1634,7 @@ def cmd_session_start(args: argparse.Namespace) -> None:
     else:
         next_task = next_eligible_task(tasks)
         if next_task is not None:
-            brief = _build_task_brief(next_task, iteration, 50, resume=False)
+            brief = _build_task_brief(next_task, session_display, 100, resume=False)
             message = (
                 "You are resuming a roadrunner-driven session. No task is "
                 "in progress. Your first action:\n\n"
@@ -1592,8 +1733,25 @@ def main() -> None:
     p_reset.add_argument("task_id")
     p_reset.add_argument("--summary", default="")
 
+    p_reset_iter = sub.add_parser(
+        "reset-iteration",
+        help="ROAD-010: reset the session (and optionally lifetime) iteration counter.",
+    )
+    p_reset_iter_group = p_reset_iter.add_mutually_exclusive_group()
+    p_reset_iter_group.add_argument(
+        "--soft",
+        action="store_true",
+        help="Reset session_iteration only; preserve lifetime counter (default).",
+    )
+    p_reset_iter_group.add_argument(
+        "--hard",
+        action="store_true",
+        help="Reset both session_iteration and lifetime iteration. Destructive.",
+    )
+
     p_stop = sub.add_parser("check-stop")
-    p_stop.add_argument("--max-iterations", default="50")
+    # ROAD-010: session-iteration cap default raised from 50 → 100.
+    p_stop.add_argument("--max-iterations", default="100")
     p_stop.add_argument("--max-attempts", default=str(MAX_TASK_ATTEMPTS))
 
     p_init = sub.add_parser("init", help="Scaffold a new roadrunner project directory")
@@ -1633,6 +1791,7 @@ def main() -> None:
         "complete": cmd_complete,
         "block": cmd_block,
         "reset": cmd_reset,
+        "reset-iteration": cmd_reset_iteration,
         "health": cmd_health,
         "check-stop": cmd_check_stop,
         "snapshot": cmd_snapshot,
