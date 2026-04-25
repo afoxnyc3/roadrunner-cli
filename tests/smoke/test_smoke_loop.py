@@ -39,10 +39,23 @@ _TOY_ROADMAP = Path(__file__).parent / "toy-roadmap"
 def _road010_present() -> bool:
     """True iff the per-session iteration counter (ROAD-010) has landed.
 
-    Detected by inspecting ``write_state``'s signature for the
-    ``session_iteration`` keyword. Avoids a hard import dependency on the
-    feature so this smoke loop can ship to ``main`` ahead of ROAD-010.
+    Behavior/schema-based probe rather than a signature check.  ROAD-010
+    may surface ``session_iteration`` through a new ``write_state`` kwarg,
+    through the existing ``extra`` payload, or via internal state mutation
+    inside ``cmd_check_stop`` — a signature-only check would miss the
+    latter two and these tests would stay skipped forever, defeating the
+    weekly regression guard.
+
+    We check two signals, either of which is sufficient:
+      1. ``RoadmapState.__annotations__`` declares ``session_iteration``.
+         This is the contract the persisted state surface honours.
+      2. ``write_state`` accepts a ``session_iteration`` kwarg.  Two of
+         the gated tests use this kwarg to seed state, so its presence is
+         the actual prerequisite for those tests to run.
     """
+    annotations = getattr(roadrunner.RoadmapState, "__annotations__", {})
+    if "session_iteration" in annotations:
+        return True
     try:
         sig = inspect.signature(roadrunner.write_state)
     except (TypeError, ValueError):
