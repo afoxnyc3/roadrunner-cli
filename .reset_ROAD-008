@@ -1,0 +1,5 @@
+{
+  "task_id": "ROAD-008",
+  "summary": "PyPI publish workflow: OIDC Trusted Publishing on v* tag, gated rehearsal via workflow_dispatch; release.md documents setup + per-release checklist.",
+  "at": "2026-04-25T02:45:40.704997+00:00"
+}

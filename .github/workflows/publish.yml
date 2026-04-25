@@ -1,0 +1,109 @@
+name: publish
+
+# Builds and publishes roadrunner-cli to PyPI on every v* tag push.
+# Uses PyPI Trusted Publishing (OIDC) — no API tokens stored in secrets.
+# See docs/release.md for the one-time PyPI/TestPyPI configuration.
+#
+# Pinned to Node24-native action majors (Node20 deprecated 2026-06-02):
+#   actions/checkout@v5
+#   actions/setup-python@v6
+#   actions/upload-artifact@v4
+#   actions/download-artifact@v4
+#   pypa/gh-action-pypi-publish@release/v1
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Manual trigger so a maintainer can rehearse the build (test job runs;
+  # the publish job is gated on a real tag and skipped on workflow_dispatch).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # Re-run the full matrix before publishing so a tag can never ship a build
+  # that hasn't passed CI on the exact ref being released.
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run pytest
+        run: pytest tests/ -v
+
+  build:
+    name: build sdist + wheel
+    needs: [test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install build backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+
+      - name: Build sdist and wheel
+        run: python -m build --sdist --wheel --outdir dist/
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: publish to PyPI
+    needs: [build]
+    # Only publish on real tag pushes — workflow_dispatch runs above are
+    # build-only rehearsals and must not push a release.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    # Bind to a GitHub Environment named "pypi" so org admins can require
+    # manual approval before each publish if desired. The same environment
+    # name must be configured on PyPI as the Trusted Publisher environment.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/roadrunner-cli
+    permissions:
+      # OIDC: required for PyPI Trusted Publishing — no API token needed.
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          # Trusted Publishing means no `password` / no `username` — the
+          # action exchanges the workflow's OIDC token for a short-lived
+          # PyPI upload token at runtime.
+          packages-dir: dist/

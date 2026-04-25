@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# hooks/precompact_hook.sh
+# hooks/postcompact_hook.sh
 # ─────────────────────────────────────────────────────────────────────────────
-# PreCompact Hook — fires before conversation compaction.
-# Writes current roadmap state to disk so Claude can resume after context reset.
-# stdout is injected into the new context window as additionalContext.
+# PostCompact Hook — fires after Claude Code completes context compaction.
+# Verifies that .context_snapshot.json survived compaction and logs a
+# `post_compact_verify` trace event. Side-effect only: PostCompact does not
+# support decision control (no block/allow), so this hook is informational
+# and always exits 0.
 # ─────────────────────────────────────────────────────────────────────────────
 
 set -euo pipefail
@@ -16,9 +18,9 @@ if [ -f "$PROJECT_ROOT/roadrunner.py" ]; then
 elif command -v roadrunner >/dev/null 2>&1; then
     RR=(roadrunner)
 else
-    echo "[roadrunner] cannot find 'roadrunner' on PATH and no roadrunner.py in $PROJECT_ROOT" >&2
-    exit 0
+    exit 0  # observability hook; never block on missing CLI
 fi
 
-# Write snapshot and emit additionalContext JSON for Claude
-"${RR[@]}" snapshot
+# Pipe stdin through; never let observability failures break the loop.
+"${RR[@]}" post-compact || true
+exit 0

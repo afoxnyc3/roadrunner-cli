@@ -24,7 +24,18 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
-MAX_ITERATIONS="${ROADMAP_MAX_ITERATIONS:-50}"
+MAX_ITERATIONS="${ROADMAP_MAX_ITERATIONS:-100}"  # ROAD-010: session cap (was 50 lifetime)
+
+# Prefer the local roadrunner.py if present (source/dev checkouts), else the
+# installed `roadrunner` console script (pip install roadrunner-cli).
+if [ -f "$PROJECT_ROOT/roadrunner.py" ]; then
+    RR=(python3 "$PROJECT_ROOT/roadrunner.py")
+elif command -v roadrunner >/dev/null 2>&1; then
+    RR=(roadrunner)
+else
+    echo "[roadrunner] cannot find 'roadrunner' on PATH and no roadrunner.py in $PROJECT_ROOT" >&2
+    exit 1
+fi
 
 # Read stdin from Claude Code
 INPUT=$(cat)
@@ -47,5 +58,4 @@ fi
 
 # ── Delegate to Python controller ─────────────────────────────────────────────
 # Pass stdin through to check-stop command which owns all logic.
-echo "$INPUT" | python3 "$PROJECT_ROOT/roadrunner.py" check-stop \
-    --max-iterations "$MAX_ITERATIONS"
+echo "$INPUT" | "${RR[@]}" check-stop --max-iterations "$MAX_ITERATIONS"

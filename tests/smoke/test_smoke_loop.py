@@ -32,6 +32,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_PROJECT_ROOT))
 
 import roadrunner  # noqa: E402
+import rr_session  # noqa: E402
+import rr_state  # noqa: E402
 
 _TOY_ROADMAP = Path(__file__).parent / "toy-roadmap"
 
@@ -90,6 +92,17 @@ def smoke_project(tmp_path):
         "STATE_FILE": roadrunner.STATE_FILE,
         "TRACE_LOG": roadrunner.TRACE_LOG,
     }
+    orig_state = {
+        "STATE_FILE": rr_state.STATE_FILE,
+        "STATE_LOCK": rr_state.STATE_LOCK,
+    }
+    orig_session = {
+        "ROOT": rr_session.ROOT,
+        "LOGS_DIR": rr_session.LOGS_DIR,
+        "TRACE_LOG": rr_session.TRACE_LOG,
+        "SESSIONS_DIR": rr_session.SESSIONS_DIR,
+        "CURRENT_POINTER": rr_session.CURRENT_POINTER,
+    }
     roadrunner.ROOT = tmp_path
     roadrunner.TASKS_FILE = tasks_dir / "tasks.yaml"
     roadrunner.TASKS_BACKUP = (tasks_dir / "tasks.yaml").with_suffix(".yaml.bak")
@@ -97,11 +110,24 @@ def smoke_project(tmp_path):
     roadrunner.CHANGELOG = logs_dir / "CHANGELOG.md"
     roadrunner.STATE_FILE = tmp_path / ".roadmap_state.json"
     roadrunner.TRACE_LOG = logs_dir / "trace.jsonl"
+    # State and session I/O live in their own modules after Issues 5/6;
+    # rebinding only `roadrunner.*` would leak writes to the real project.
+    rr_state.STATE_FILE = tmp_path / ".roadmap_state.json"
+    rr_state.STATE_LOCK = tmp_path / ".roadmap_state.lock"
+    rr_session.ROOT = tmp_path
+    rr_session.LOGS_DIR = logs_dir
+    rr_session.TRACE_LOG = logs_dir / "trace.jsonl"
+    rr_session.SESSIONS_DIR = logs_dir / "sessions"
+    rr_session.CURRENT_POINTER = logs_dir / "sessions" / ".current"
 
     yield tmp_path
 
     for k, v in orig.items():
         setattr(roadrunner, k, v)
+    for k, v in orig_state.items():
+        setattr(rr_state, k, v)
+    for k, v in orig_session.items():
+        setattr(rr_session, k, v)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────

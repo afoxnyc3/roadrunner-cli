@@ -148,7 +148,7 @@ tasks:
     '
 - id: ROAD-005
   title: PostCompact hook for context restoration verification
-  status: todo
+  status: done
   depends_on: []
   goal: "Add a PostCompact hook that fires after Claude Code completes context compaction.\n\
     The hook verifies that the context snapshot was restored correctly and logs a\n\
@@ -192,7 +192,7 @@ tasks:
     '
 - id: ROAD-006
   title: CONTRIBUTING.md and configuration reference
-  status: todo
+  status: done
   depends_on: []
   goal: "Write two documents:\n\n1. CONTRIBUTING.md at the project root covering:\n\
     \   - Dev environment setup (pip install -e .[dev] or requirements.txt)\n   -\
@@ -231,7 +231,7 @@ tasks:
     \ 200 lines.\ndocs/configuration.md can be longer \u2014 it is a reference doc.\n"
 - id: ROAD-007
   title: "roadrunner watch \u2014 live run monitor"
-  status: todo
+  status: done
   depends_on:
   - ROAD-003
   goal: "Add a 'watch' subcommand that provides a live status view during an overnight\
@@ -265,7 +265,7 @@ tasks:
     clear is enough. The watch command is read-only \u2014 it never writes state.\n"
 - id: ROAD-008
   title: PyPI publish workflow
-  status: todo
+  status: done
   depends_on:
   - ROAD-001
   - ROAD-004
@@ -308,7 +308,7 @@ tasks:
     '
 - id: ROAD-009
   title: End-to-end worked example project
-  status: todo
+  status: done
   depends_on:
   - ROAD-002
   - ROAD-003
@@ -350,3 +350,53 @@ tasks:
   notes: "This is the single most important piece of documentation for adoption. New\
     \ users\nneed to see the loop work on something concrete before trusting it with\
     \ their\nown project. Keep the example minimal \u2014 3 tasks, no external dependencies.\n"
+- id: ROAD-010
+  title: Per-session iteration counter with reset on SessionStart
+  status: done
+  depends_on: []
+  goal: "Split the iteration counter into two values so the runaway-protection cap\
+    \ becomes\nper-session instead of lifetime-cumulative. Bug observed 2026-04-24:\
+    \ iteration hit\n92 against max_iter=50 because every Stop-hook fire incremented\
+    \ and persisted the\ncounter across all 'claude' invocations, making the cap a\
+    \ lifetime ceiling rather\nthan a per-run runaway guard.\n\nChanges:\n  - Keep\
+    \ 'iteration' in .roadmap_state.json as the lifetime audit counter (preserves\n\
+    \    existing traces and backward compat).\n  - Add 'session_iteration' (int,\
+    \ default 0) to RoadmapState TypedDict. Reset to 0 in\n    cmd_session_start.\n\
+    \  - Gate the max-iterations check in cmd_check_stop on session_iteration, not\n\
+    \    iteration. Raise DEFAULT session cap from 50 \u2192 100.\n  - Add 'reset-iteration\
+    \ [--soft|--hard]' subcommand. --soft resets session_iteration;\n    --hard zeros\
+    \ both.\n  - Surface both counters in cmd_status output and in _build_task_brief.\n\
+    \  - Bump STATE_SCHEMA_VERSION and add a migration that defaults session_iteration=0\n\
+    \    for state files written by older versions.\n"
+  acceptance_criteria:
+  - RoadmapState TypedDict has both iteration and session_iteration fields
+  - cmd_session_start resets session_iteration to 0 while preserving iteration
+  - cmd_check_stop compares session_iteration (not iteration) against max_iter
+  - Default max_iter passed by check_stop hook is 100 (was 50)
+  - reset-iteration --soft resets session_iteration only
+  - reset-iteration --hard resets both counters
+  - cmd_status output shows both counters with clear labels
+  - State files without session_iteration load cleanly (treated as 0)
+  - STATE_SCHEMA_VERSION bumped
+  - All existing tests continue to pass
+  - ruff check and mypy pass
+  validation_commands:
+  - python3 roadrunner.py reset-iteration --help
+  - python3 -m pytest tests/ -q
+  - ruff check roadrunner.py tests/ hooks/
+  - python3 -m mypy roadrunner.py --ignore-missing-imports
+  - grep -q "session_iteration" roadrunner.py
+  documentation_targets:
+  - CHANGELOG.md
+  - logs/ROAD-010.md
+  - docs/configuration.md
+  files_expected:
+  - roadrunner.py
+  - hooks/stop_hook.sh
+  notes: 'Traced to docs/resolution-plan-2026-04-24.md Issue 1. Cap value 100 approved
+    by Alex 2026-04-24. STATE_SCHEMA_VERSION bump must include backward-compat for
+    older state files missing session_iteration. Write tests that simulate a SessionStart
+    boundary and assert reset behavior. entra-triage vendors this file and syncs periodically;
+    no coordination needed as it reads state via setdefault-based migration.
+
+    '

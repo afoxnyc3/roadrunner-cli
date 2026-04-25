@@ -15,6 +15,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict, cast
@@ -65,9 +67,10 @@ class Task(TypedDict, total=False):
     notes: str
 
 
-# RoadmapState is now defined in rr_state.py and re-exported at the top of
-# this module. Kept the class name in the public namespace for tests and any
-# downstream consumers that did `from roadrunner import RoadmapState`.
+# RoadmapState is defined in rr_state.py and re-exported at the top of this
+# module. Kept the class name in the public namespace for tests and any
+# downstream consumers that did `from roadrunner import RoadmapState`. The
+# `session_iteration` field (ROAD-010, schema v2) lives there too.
 
 
 class ValidationResult(TypedDict, total=False):
@@ -99,6 +102,8 @@ TASKS_BACKUP_KEEP = 5              # number of rolling tasks.yaml.bak.N copies t
 LOG_ROTATE_BYTES = 10 * 1024 * 1024  # rotate when a log file exceeds 10 MB
 LOG_RETAIN_DAYS = 7                # delete rotated/compressed logs older than this
 # STATE_SCHEMA_VERSION is owned by rr_state.py and re-exported above.
+# v2 (ROAD-010) adds the session_iteration field; older state files migrate
+# transparently via setdefault in rr_state.read_state.
 SNAPSHOT_SCHEMA_VERSION = 1        # bump when .context_snapshot.json format changes incompatibly
 
 # Built from two fragments so the sentinel string never appears literally in the source
@@ -695,6 +700,14 @@ def cmd_status(args: argparse.Namespace) -> None:
     next_t = next_eligible_task(tasks)
     print(f"\nNext eligible: {next_t['id'] if next_t else 'None'}")
 
+    # ROAD-010: show both iteration counters so the operator can see which
+    # value gates the runaway cap vs. which is lifetime audit.
+    state = read_state()
+    lifetime_iter = state.get("iteration", 0)
+    session_iter = state.get("session_iteration", 0)
+    print(f"Iteration (session): {session_iter}")
+    print(f"Iteration (lifetime): {lifetime_iter}")
+
 
 def cmd_next(args: argparse.Namespace) -> None:
     tasks = load_tasks()
@@ -833,6 +846,55 @@ def cmd_reset(args: argparse.Namespace) -> None:
     write_context_snapshot()
     rotate_logs()
     print(f"Reset marker written for {args.task_id}.")
+
+
+def cmd_reset_iteration(args: argparse.Namespace) -> None:
+    """ROAD-010: explicit user control over the iteration counters.
+
+      --soft  zeros session_iteration only. Use after a runaway cap fire to
+              start a fresh session window without losing the lifetime audit
+              trail.
+
+      --hard  zeros both iteration (lifetime) and session_iteration. Use only
+              when fully restarting the roadmap (e.g. after a failed experiment
+              that you want to erase from the trace entirely). Destructive to
+              the audit counter.
+
+    Defaults to --soft if neither flag is given. The two flags are mutually
+    exclusive; hard wins if both are passed (argparse already warns, but we
+    guard explicitly for clarity).
+    """
+    hard = bool(getattr(args, "hard", False))
+    # --soft is the default; --hard is the explicit opt-in to nuke lifetime
+    with _exclusive_state_lock():
+        state = read_state()
+        new_lifetime = 0 if hard else state.get("iteration", 0)
+        write_state(
+            state.get("current_task_id"),
+            new_lifetime,
+            state.get("attempts_per_task"),
+            session_iteration=0,
+        )
+    trace_event(
+        "reset_iteration",
+        task_id=state.get("current_task_id"),
+        iteration=new_lifetime,
+        extra={
+            "mode": "hard" if hard else "soft",
+            "session_iteration": 0,
+            "previous_lifetime": state.get("iteration", 0),
+        },
+    )
+    mode = "hard" if hard else "soft"
+    if hard:
+        print(
+            f"reset-iteration ({mode}): session=0, lifetime=0 "
+            f"(was {state.get('iteration', 0)})"
+        )
+    else:
+        print(
+            f"reset-iteration ({mode}): session=0, lifetime={new_lifetime} (preserved)"
+        )
 
 
 # ── Scope-aware commit (ROAD-021) ─────────────────────────────────────────────
@@ -985,6 +1047,173 @@ def cmd_sessions(args: argparse.Namespace) -> None:
     print("\n\n".join(blocks))
 
 
+# ── watch: live read-only monitor ─────────────────────────────────────────────
+
+
+def _tail_trace_events(n: int = 5) -> list[dict]:
+    """Return the last ``n`` parseable JSONL records from ``TRACE_LOG``.
+
+    Tolerates a missing file, an empty file, and partial trailing lines from
+    a concurrent in-flight write — bad lines are silently skipped so the
+    watch loop never crashes on a torn append.
+    """
+    if not TRACE_LOG.exists():
+        return []
+    try:
+        with open(TRACE_LOG) as f:
+            lines = list(deque(f, maxlen=n))
+    except OSError:
+        return []
+    out: list[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def _trace_start_ts() -> datetime | None:
+    """Return the timestamp of the first trace event, or None if unavailable."""
+    if not TRACE_LOG.exists():
+        return None
+    try:
+        with open(TRACE_LOG) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = rec.get("ts") if isinstance(rec, dict) else None
+                if isinstance(ts, str):
+                    try:
+                        return datetime.fromisoformat(ts)
+                    except ValueError:
+                        return None
+                return None
+    except OSError:
+        return None
+    return None
+
+
+def _format_elapsed(start: datetime | None, now: datetime) -> str:
+    if start is None:
+        return "—"
+    delta = now - start
+    total = int(delta.total_seconds())
+    if total < 0:
+        return "—"
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _render_watch_frame(max_iter: int, now: datetime | None = None) -> str:
+    """Compose one watch frame as a string. Pure function — all IO is best-effort
+    and exceptions render a single error line instead of propagating."""
+    moment = now or datetime.now(timezone.utc)
+    header_ts = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines: list[str] = []
+    lines.append(f"─ roadrunner watch ─────────────────── {header_ts} ─")
+    lines.append("")
+
+    try:
+        state = read_state()
+    except SystemExit:
+        # read_state() exits on forward-incompat schema; surface and continue.
+        lines.append(" state: unreadable (schema gate)")
+        state = {}
+    session_iter = state.get("session_iteration", 0) if isinstance(state, dict) else 0
+    lifetime_iter = state.get("iteration", 0) if isinstance(state, dict) else 0
+    attempts_map = state.get("attempts_per_task", {}) if isinstance(state, dict) else {}
+
+    lines.append(f" Iteration:   session {session_iter} / {max_iter}     lifetime {lifetime_iter}")
+    lines.append(f" Elapsed:     {_format_elapsed(_trace_start_ts(), moment)}  (since first trace event)")
+
+    try:
+        tasks = load_tasks()
+        tasks_err: str | None = None
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        tasks = []
+        tasks_err = str(exc)
+
+    if tasks_err:
+        lines.append(f" tasks.yaml:  unreadable — {tasks_err}")
+    else:
+        active = active_task(tasks)
+        if active is not None:
+            attempts = attempts_map.get(active["id"], 0) if isinstance(attempts_map, dict) else 0
+            lines.append(f" Active:      {active['id']}  attempt {attempts}/{MAX_TASK_ATTEMPTS}  — {active.get('title', '')}")
+        else:
+            lines.append(" Active:      (no active task)")
+
+        nxt = next_eligible_task(tasks)
+        lines.append(f" Next up:     {nxt['id'] if nxt else '(none eligible)'}")
+
+        counts = {"done": 0, "in_progress": 0, "todo": 0, "blocked": 0}
+        for t in tasks:
+            counts[t.get("status", "todo")] = counts.get(t.get("status", "todo"), 0) + 1
+        lines.append("")
+        lines.append(
+            f" Status:      done {counts['done']}   in_progress {counts['in_progress']}   "
+            f"todo {counts['todo']}   blocked {counts['blocked']}"
+        )
+
+    lines.append("")
+    lines.append(" Recent events (last 5):")
+    events = _tail_trace_events(5)
+    if not events:
+        lines.append("   (no trace events yet)")
+    else:
+        for rec in events:
+            ts_raw = rec.get("ts", "")
+            try:
+                ts = datetime.fromisoformat(ts_raw).strftime("%H:%M:%SZ")
+            except (TypeError, ValueError):
+                ts = "--:--:--"
+            event = str(rec.get("event", "?"))[:22]
+            tid = rec.get("task_id") or "—"
+            lines.append(f"   {ts}  {event:<22} {tid}")
+
+    lines.append("")
+    lines.append(" (Ctrl-C to exit)")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Live read-only monitor. Polls disk state on a fixed interval and
+    redraws a status frame. Exits 0 on Ctrl-C. Never writes state."""
+    interval = max(0.5, float(args.interval))  # floor: --interval 0 must not busy-loop
+    max_iter_env = os.environ.get("ROADMAP_MAX_ITERATIONS")
+    try:
+        max_iter = int(max_iter_env) if max_iter_env else 100
+    except ValueError:
+        max_iter = 100
+
+    try:
+        while True:
+            try:
+                frame = _render_watch_frame(max_iter=max_iter)
+            except Exception as exc:  # observability tool; never crash the loop
+                frame = f"watch: render failed: {exc}\n"
+            sys.stdout.write("\x1b[2J\x1b[H")  # clear screen + cursor home
+            sys.stdout.write(frame)
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        return
+
+
 def cmd_check_stop(args: argparse.Namespace) -> None:
     """
     Called by Stop hook. Outputs JSON to control whether Claude Code halts.
@@ -1017,25 +1246,46 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
     # via the context manager's finally.
     with _exclusive_state_lock():
         state = read_state()
+        # ROAD-010: two counters. `iteration` is lifetime-cumulative (audit trail,
+        # preserved across sessions); `session_iteration` resets on every
+        # SessionStart hook and is the one gated by --max-iterations. Prior to
+        # this change the lifetime counter was the cap — which meant that once
+        # it crossed the cap, every subsequent `claude` invocation halted on
+        # its first Stop fire. The cap is a runaway-protection primitive, not
+        # a project-lifetime ceiling.
         iteration = state.get("iteration", 0) + 1
+        session_iteration = state.get("session_iteration", 0) + 1
         attempts = state.get("attempts_per_task", {})
-        max_iter = int(args.max_iterations) if args.max_iterations else 50
+        max_iter = int(args.max_iterations) if args.max_iterations else 100
         max_attempts = int(args.max_attempts) if args.max_attempts else MAX_TASK_ATTEMPTS
-        write_state(state.get("current_task_id"), iteration, attempts)
+        write_state(
+            state.get("current_task_id"),
+            iteration,
+            attempts,
+            session_iteration=session_iteration,
+        )
         trace_event(
             "check_stop",
             task_id=state.get("current_task_id"),
             iteration=iteration,
-            extra={"max_iter": max_iter},
+            extra={
+                "max_iter": max_iter,
+                "session_iteration": session_iteration,
+            },
         )
 
-        if iteration >= max_iter:
+        if session_iteration >= max_iter:
             _finalize_session_quiet()
             print(
                 json.dumps(
                     {
                         "continue": False,
-                        "stopReason": f"Max iterations ({max_iter}) reached. Roadmap loop halted.",
+                        "stopReason": (
+                            f"Max iterations ({max_iter}) reached for this session "
+                            f"(lifetime: {iteration}). Roadmap loop halted. "
+                            f"Use 'roadrunner reset-iteration --soft' to start a fresh "
+                            f"session window."
+                        ),
                     },
                     ensure_ascii=False,
                 )
@@ -1067,7 +1317,12 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
         in_flight = active_task(tasks)
         if in_flight:
             task_attempts = increment_attempts(state, in_flight["id"])
-            write_state(in_flight["id"], iteration, state["attempts_per_task"])
+            write_state(
+                in_flight["id"],
+                iteration,
+                state["attempts_per_task"],
+                session_iteration=session_iteration,
+            )
             if task_attempts >= max_attempts:
                 in_flight["status"] = "blocked"
                 save_tasks(tasks)
@@ -1088,13 +1343,15 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
                 )
                 print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
                 sys.exit(0)
-            brief = _build_task_brief(in_flight, iteration, max_iter, resume=True)
+            brief = _build_task_brief(
+                in_flight, session_iteration, max_iter, resume=True
+            )
             print(json.dumps({"decision": "block", "reason": brief}, ensure_ascii=False))
             sys.exit(0)
 
         next_task = next_eligible_task(tasks)
         if next_task:
-            brief = _build_task_brief(next_task, iteration, max_iter)
+            brief = _build_task_brief(next_task, session_iteration, max_iter)
             print(json.dumps({"decision": "block", "reason": brief}, ensure_ascii=False))
             sys.exit(0)
 
@@ -1124,6 +1381,91 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
     write_context_snapshot()
+
+
+def cmd_post_compact(args: argparse.Namespace) -> None:
+    """Called by the PostCompact hook after Claude Code completes compaction.
+
+    Reads the optional hook payload (trigger, compact_summary) from stdin,
+    then verifies that ``.context_snapshot.json`` is present, parseable, on
+    the expected schema, and contains every required field. Outcome is
+    written to ``trace.jsonl`` as a ``post_compact_verify`` event.
+
+    PostCompact does not support decision control per the Claude Code hooks
+    reference, so this command is purely informational and always exits 0
+    — observability must never break the control loop.
+    """
+    required_fields = (
+        "schema_version",
+        "snapshot_at",
+        "current_task",
+        "iteration",
+        "next_eligible",
+        "status_summary",
+    )
+
+    trigger: str | None = None
+    compact_summary: str | None = None
+    try:
+        if not sys.stdin.isatty():
+            raw = sys.stdin.read()
+            if raw.strip():
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    raw_trigger = payload.get("trigger")
+                    if isinstance(raw_trigger, str):
+                        trigger = raw_trigger
+                    raw_summary = payload.get("compact_summary")
+                    if isinstance(raw_summary, str):
+                        compact_summary = raw_summary
+    except (json.JSONDecodeError, OSError, ValueError):
+        # Malformed stdin must not break the loop; the missing fields will
+        # surface in the trace event below.
+        pass
+
+    snapshot_path = ROOT / ".context_snapshot.json"
+    success = False
+    missing: list[str] = []
+    schema_observed: Any = None
+    snapshot_data: dict[str, Any] = {}
+
+    if not snapshot_path.exists():
+        missing = ["<file-missing>"]
+    else:
+        try:
+            parsed = json.loads(snapshot_path.read_text())
+            if isinstance(parsed, dict):
+                snapshot_data = parsed
+                missing = [f for f in required_fields if f not in snapshot_data]
+                schema_observed = snapshot_data.get("schema_version")
+                if not missing and schema_observed == SNAPSHOT_SCHEMA_VERSION:
+                    success = True
+            else:
+                missing = ["<not-an-object>"]
+        except (json.JSONDecodeError, OSError):
+            missing = ["<unreadable>"]
+
+    extra: dict[str, Any] = {"success": success}
+    if trigger is not None:
+        extra["trigger"] = trigger
+    if compact_summary is not None:
+        # Bound the trace line — compaction summaries can be long.
+        extra["compact_summary"] = compact_summary[:500]
+    if missing:
+        extra["missing_fields"] = missing
+    if schema_observed is not None and schema_observed != SNAPSHOT_SCHEMA_VERSION:
+        extra["schema_mismatch"] = {
+            "expected": SNAPSHOT_SCHEMA_VERSION,
+            "got": schema_observed,
+        }
+    if snapshot_data.get("snapshot_at"):
+        extra["snapshot_at"] = snapshot_data["snapshot_at"]
+
+    trace_event(
+        "post_compact_verify",
+        task_id=snapshot_data.get("current_task"),
+        extra=extra,
+    )
 
 
 _INIT_TASKS_TEMPLATE = """\
@@ -1440,12 +1782,35 @@ def cmd_session_start(args: argparse.Namespace) -> None:
     except OSError as exc:
         print(f"[roadrunner] session open failed: {exc}", file=sys.stderr)
 
-    state = read_state()
-    iteration = state.get("iteration", 0) + 1
+    # ROAD-010: SessionStart is the boundary that resets the per-session iteration
+    # counter. Persist the reset atomically so the first Stop-hook fire of the
+    # new session sees session_iteration=0 → 1 rather than carrying over the
+    # previous run's count. The read MUST happen inside the lock — otherwise a
+    # concurrent check-stop fire between read and write can have its iteration
+    # / attempts_per_task updates rolled back by this snapshot.
+    with _exclusive_state_lock():
+        state = read_state()
+        iteration = state.get("iteration", 0)  # lifetime (display only, not incremented here)
+        write_state(
+            state.get("current_task_id"),
+            iteration,
+            state.get("attempts_per_task"),
+            session_iteration=0,
+        )
+    trace_event(
+        "session_start_reset",
+        task_id=state.get("current_task_id"),
+        iteration=iteration,
+        extra={"session_iteration": 0},
+    )
+
+    # After reset, display starts from session_iteration=0; the first cap-check
+    # will see 1. Default session cap is 100 (ROAD-010).
+    session_display = 0
 
     in_flight = active_task(tasks)
     if in_flight is not None:
-        brief = _build_task_brief(in_flight, iteration, 50, resume=True)
+        brief = _build_task_brief(in_flight, session_display, 100, resume=True)
         message = (
             "You are resuming a roadrunner-driven session. A task is in "
             "progress — continue from where it left off.\n\n" + brief
@@ -1453,7 +1818,7 @@ def cmd_session_start(args: argparse.Namespace) -> None:
     else:
         next_task = next_eligible_task(tasks)
         if next_task is not None:
-            brief = _build_task_brief(next_task, iteration, 50, resume=False)
+            brief = _build_task_brief(next_task, session_display, 100, resume=False)
             message = (
                 "You are resuming a roadrunner-driven session. No task is "
                 "in progress. Your first action:\n\n"
@@ -1533,6 +1898,10 @@ def main() -> None:
     sub.add_parser("health")
     sub.add_parser("snapshot")
     sub.add_parser("session-start")
+    sub.add_parser(
+        "post-compact",
+        help="PostCompact hook entry: verify .context_snapshot.json after compaction",
+    )
 
     p_sessions = sub.add_parser(
         "sessions",
@@ -1562,8 +1931,25 @@ def main() -> None:
     p_reset.add_argument("task_id")
     p_reset.add_argument("--summary", default="")
 
+    p_reset_iter = sub.add_parser(
+        "reset-iteration",
+        help="ROAD-010: reset the session (and optionally lifetime) iteration counter.",
+    )
+    p_reset_iter_group = p_reset_iter.add_mutually_exclusive_group()
+    p_reset_iter_group.add_argument(
+        "--soft",
+        action="store_true",
+        help="Reset session_iteration only; preserve lifetime counter (default).",
+    )
+    p_reset_iter_group.add_argument(
+        "--hard",
+        action="store_true",
+        help="Reset both session_iteration and lifetime iteration. Destructive.",
+    )
+
     p_stop = sub.add_parser("check-stop")
-    p_stop.add_argument("--max-iterations", default="50")
+    # ROAD-010: session-iteration cap default raised from 50 → 100.
+    p_stop.add_argument("--max-iterations", default="100")
     p_stop.add_argument("--max-attempts", default=str(MAX_TASK_ATTEMPTS))
 
     p_init = sub.add_parser("init", help="Scaffold a new roadrunner project directory")
@@ -1579,6 +1965,17 @@ def main() -> None:
         "--tasks-file",
         default=None,
         help="Path to a tasks.yaml file (defaults to the project tasks/tasks.yaml)",
+    )
+
+    p_watch = sub.add_parser(
+        "watch",
+        help="Live read-only monitor: poll disk state and redraw a status frame.",
+    )
+    p_watch.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        help="Seconds between frames (floored at 0.5). Default: 5.",
     )
 
     p_commit = sub.add_parser(
@@ -1603,13 +2000,16 @@ def main() -> None:
         "complete": cmd_complete,
         "block": cmd_block,
         "reset": cmd_reset,
+        "reset-iteration": cmd_reset_iteration,
         "health": cmd_health,
         "check-stop": cmd_check_stop,
         "snapshot": cmd_snapshot,
         "session-start": cmd_session_start,
+        "post-compact": cmd_post_compact,
         "init": cmd_init,
         "analyze": cmd_analyze,
         "commit": cmd_commit,
+        "watch": cmd_watch,
         "sessions": cmd_sessions,
     }
 

@@ -40,7 +40,8 @@ except ImportError:  # pragma: no cover - Windows fallback keeps the module impo
 
 class RoadmapState(TypedDict, total=False):
     current_task_id: str | None
-    iteration: int
+    iteration: int              # lifetime-cumulative counter (audit trail)
+    session_iteration: int      # per-session counter; reset on SessionStart; gates the iteration cap (ROAD-010)
     attempts_per_task: dict[str, int]
     updated_at: str
     base_branch: str
@@ -55,7 +56,8 @@ _PROJECT_ROOT = Path(__file__).parent
 STATE_FILE: Path = _PROJECT_ROOT / ".roadmap_state.json"
 STATE_LOCK: Path = _PROJECT_ROOT / ".roadmap_state.lock"  # sibling lockfile; survives os.replace
 
-STATE_SCHEMA_VERSION = 1  # bump when .roadmap_state.json format changes incompatibly
+STATE_SCHEMA_VERSION = 2  # bump when .roadmap_state.json format changes incompatibly
+                          # v2 (ROAD-010): added session_iteration field; backward-compat via setdefault
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -74,6 +76,7 @@ def write_state(
     iteration: int,
     attempts: dict | None = None,
     extra: dict | None = None,
+    session_iteration: int | None = None,
 ) -> None:
     """Atomically write the roadmap state file. Caller is expected to hold
     ``_exclusive_state_lock()`` if concurrent Stop-hook fires are possible.
@@ -82,11 +85,32 @@ def write_state(
     never see a torn write: either the previous file or the new file is
     visible, never a half-written one. ``f.flush()`` + ``os.fsync()`` ensure
     bytes hit the disk before the rename.
+
+    ROAD-010: ``session_iteration`` is the per-session counter. When None,
+    preserve the value already on disk (or default to 0 for a fresh state
+    file). When set explicitly, overwrite. Keeps existing call sites
+    correct without threading the field through every signature — only the
+    call sites that mutate the session counter (cmd_check_stop,
+    cmd_session_start) need to know about it.
     """
+    if session_iteration is None:
+        existing = 0
+        if STATE_FILE.exists():
+            try:
+                data = json.loads(STATE_FILE.read_text())
+                if isinstance(data, dict):
+                    existing = int(data.get("session_iteration", 0))
+            except (OSError, json.JSONDecodeError, ValueError, TypeError):
+                existing = 0
+        effective_session_iter = existing
+    else:
+        effective_session_iter = session_iteration
+
     state = {
         "schema_version": STATE_SCHEMA_VERSION,
         "current_task_id": current_task_id,
         "iteration": iteration,
+        "session_iteration": effective_session_iter,
         "attempts_per_task": attempts or {},
         "updated_at": _now(),
     }
@@ -109,7 +133,12 @@ def read_state() -> RoadmapState:
       compat state file with a backward-incompatible payload.
     - missing optional keys -> filled with defaults via setdefault.
     """
-    default: RoadmapState = {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
+    default: RoadmapState = {
+        "current_task_id": None,
+        "iteration": 0,
+        "session_iteration": 0,
+        "attempts_per_task": {},
+    }
     if not STATE_FILE.exists():
         return default
     try:
@@ -139,6 +168,9 @@ def read_state() -> RoadmapState:
     data.setdefault("attempts_per_task", {})
     data.setdefault("current_task_id", None)
     data.setdefault("iteration", 0)
+    # ROAD-010 (schema v2): older state files lack this field. Treat as 0 so
+    # the first Stop-hook fire after upgrade starts a fresh session window.
+    data.setdefault("session_iteration", 0)
     return cast(RoadmapState, data)
 
 
