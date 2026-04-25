@@ -258,3 +258,6 @@ Roadmap finished — ROADMAP_COMPLETE signal received.
 ## 2026-04-25T13:21:18.087570+00:00 | ROAD-009 → done
 Added docs/examples/hello-roadrunner/ as a self-contained 3-task demo. tasks/tasks.yaml defines DEMO-001 (count_words function), DEMO-002 (CLI entry point depending on DEMO-001), and DEMO-003 (pytest tests depending on DEMO-002). Each demo task has real validation_commands (file existence, behavioral assertions via python3 -c, pytest) so analyze emits no warnings — passes 'No issues found'. CLAUDE.md is a minimal operating-contract template: per-cycle steps, completion sentinel, file scope, validation-as-gate. README.md walks through copy → roadrunner init → status/analyze → claude in 27 lines (under the 30-line acceptance cap). Uses the published 'pip install roadrunner-cli' + 'roadrunner init' path that ROAD-001/002/008 enable. All 5 task validators pass; full pytest suite still 150/150.
 
+## 2026-04-25T22:11:39.913965+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+

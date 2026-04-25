@@ -10,9 +10,9 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/afoxnyc3/roadrunner-cli/actions/workflows/ci.yml"><img src="https://github.com/afoxnyc3/roadrunner-cli/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/afoxnyc/roadrunner-cli/actions/workflows/ci.yml"><img src="https://github.com/afoxnyc/roadrunner-cli/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue" alt="Python" />
-  <img src="https://img.shields.io/badge/tests-102%20passing-brightgreen" alt="Tests" />
+  <img src="https://img.shields.io/badge/tests-passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform" />
 </p>
 
@@ -30,7 +30,7 @@ The result is a harness you can launch in the morning, walk away from, and come 
 
 Roadrunner splits responsibility three ways. The split is the whole idea.
 
-- **Python owns control.** A single 1,000-line file, `roadrunner.py`, is the source of truth for what happens next. It selects the next eligible task, runs validation, writes state atomically, decides whether the loop should continue. Claude never decides the order of work; Claude's only job is implementing whatever Python hands it.
+- **Python owns control.** A single Python file, `roadrunner.py`, is the source of truth for what happens next. It selects the next eligible task, runs validation, writes state atomically, decides whether the loop should continue. Claude never decides the order of work; Claude's only job is implementing whatever Python hands it.
 - **Claude Code owns execution.** Inside the boundary of one task, Claude does what it does best: reads code, edits files, writes tests, debugs. The operating contract is narrow — stay inside the task's `files_expected`, don't touch anything outside scope, run validation before claiming completion.
 - **Hooks enforce completion.** Claude Code's lifecycle hooks — Stop, SessionStart, PreCompact, PostToolUse — bridge the two worlds. The Stop hook is the critical one: after every response, it runs `roadrunner.py check-stop`, and if the roadmap isn't finished it blocks the stop and injects the next task brief. Claude can't quit the loop by accident.
 
@@ -49,7 +49,7 @@ Concrete differentiators versus an unstructured Claude Code session:
 - **Retry storms are capped.** After five failed resume attempts on the same task, the task is auto-blocked and the loop moves on instead of burning tokens on a broken premise.
 - **Three-layer observability.** `logs/trace.jsonl` gives you machine-readable per-event telemetry. `logs/CHANGELOG.md` is a human-readable audit trail. `logs/TASK-XXX.md` is a per-task work log with full validation output. Post-mortem analysis is always possible.
 - **Loss-resistant state.** Tasks file has rolling backups. State file has atomic writes and a `fcntl` advisory lock so concurrent hook fires can't corrupt the iteration counter. The snapshot format is versioned for forward-compat safety.
-- **No framework tax.** Two runtime dependencies (PyYAML, pytest). No LangChain, no CrewAI, no vector database. If you can read a 1,000-line Python file, you can read and modify this tool.
+- **No framework tax.** One runtime dependency (PyYAML); pytest and ruff are dev-only. No LangChain, no CrewAI, no vector database. If you can read a single Python file, you can read and modify this tool.
 
 Versus alternatives — LangGraph, CrewAI, AutoGen — Roadrunner is not an agent *framework*. It is a *harness* that makes an existing agent (Claude Code) deterministic. If you already love Claude Code and want the loop to be boring and reliable, Roadrunner fits. If you're building a general-purpose multi-agent system from scratch, look elsewhere.
 
@@ -65,22 +65,36 @@ The same pattern applies to any sequential project that can be decomposed into v
 
 ## Getting Started
 
+The fastest path is `pip install` + `roadrunner init` in your target directory:
+
 ```bash
-# 1. Clone
-git clone https://github.com/afoxnyc3/roadrunner-cli.git
-cd roadrunner-cli
+# 1. Install
+pip install roadrunner-cli
 
-# 2. Install the two runtime dependencies
-pip3 install -r requirements.txt
+# 2. Scaffold a new project (writes tasks/tasks.yaml, hooks/, .claude/, CLAUDE.md)
+roadrunner init my-project
+cd my-project
 
-# 3. Make the hooks executable
-chmod +x hooks/*.sh
-
-# 4. Sanity check
-python3 roadrunner.py health
+# 3. Sanity check
+roadrunner health
 ```
 
-You'll see something like `healthy — 6/6 done, 0 eligible, 0 blocked` if you're starting from the shipped demo roadmap. To start your own project, edit `tasks/tasks.yaml` to describe your work and write a fresh `CLAUDE.md` with the operating contract for your project.
+You'll see something like `healthy — 1/1 done, 0 eligible, 0 blocked` against
+the bootstrap demo task. To run a real project, edit `tasks/tasks.yaml` to
+describe your work and tailor `CLAUDE.md` to the operating contract you want.
+
+For a complete worked example, see [`docs/examples/hello-roadrunner/`](docs/examples/hello-roadrunner/) —
+a three-task demo (function → CLI → tests) you can copy and run end-to-end.
+
+### From source
+
+```bash
+git clone https://github.com/afoxnyc/roadrunner-cli.git
+cd roadrunner-cli
+pip install -e '.[dev]'    # editable install + pytest + ruff + build
+just hooks                 # chmod +x hooks/*.sh
+python3 roadrunner.py health
+```
 
 ## How To Use It End-to-End
 
@@ -139,7 +153,7 @@ Tasks that auto-blocked show up in `python3 roadrunner.py status` with a `blocke
 Before pointing Roadrunner at a real project, exercise the shipped demo to get a feel for the loop:
 
 ```bash
-# Run the full test suite (102 tests, ~1.3 seconds)
+# Run the full test suite (a few seconds)
 python3 -m pytest tests/ -v
 
 # Dry-run validation on one of the demo tasks
@@ -154,7 +168,7 @@ python3 roadrunner.py snapshot
 python3 roadrunner.py session-start
 ```
 
-The test suite covers 102 scenarios including state-file corruption, concurrent hook fires, merge-conflict recovery, log rotation, schema version skew, UTF-8 round-tripping, and a shell-injection canary. CI runs the matrix across Python 3.10 / 3.11 / 3.12 on every push.
+The test suite covers state-file corruption, concurrent hook fires, merge-conflict recovery, log rotation, schema version skew, UTF-8 round-tripping, and a shell-injection canary. CI runs the matrix across Python 3.10 / 3.11 / 3.12 on every push, plus ruff, mypy, and shellcheck on the hooks.
 
 ## Running Overnight
 
@@ -172,29 +186,52 @@ Claude works through the roadmap, validating each task before marking it done, w
 ```
 tasks/tasks.yaml              <- the queue (schema-validated, atomically written, rolling .bak)
 roadrunner.py                 <- controller: validation, logging, state, stop-check, snapshot, session-start
-.claude/settings.json         <- hook registrations: Stop, SessionStart, PreCompact, PostToolUse
+.claude/settings.json         <- hook registrations: Stop, SessionStart, PreCompact, PostCompact, PostToolUse
 hooks/stop_hook.sh            <- loop enforcement: block or allow Claude to stop
 hooks/session_start_hook.sh   <- context injection: delegates to `roadrunner.py session-start`
 hooks/precompact_hook.sh      <- context snapshot: delegates to `roadrunner.py snapshot`
+hooks/postcompact_hook.sh     <- snapshot verification: delegates to `roadrunner.py post-compact`
 hooks/post_write_hook.sh      <- lint feedback: ruff on .py, yaml parse on .yaml
 CLAUDE.md                     <- agent brief: operating contract for Claude Code
 DESIGN.md                     <- full design + ADR index
+CONTRIBUTING.md               <- dev setup, PR workflow, recipes for new commands and hooks
+CHANGELOG.md                  <- release-facing changelog (per-task audit trail in logs/CHANGELOG.md)
+docs/configuration.md         <- every tunable, every schema, env vars, state file layout
+docs/release.md               <- PyPI Trusted Publishing setup + per-release checklist
+docs/examples/                <- hello-roadrunner end-to-end worked example
 docs/adr/                     <- 10 ADRs documenting real decisions and fixes
 ```
 
 ## Operator Commands
 
+After `pip install roadrunner-cli` the `roadrunner` console script is on
+your PATH. From source, swap `roadrunner` for `python3 roadrunner.py`.
+
 ```bash
-python3 roadrunner.py status           # see all task states
-python3 roadrunner.py next             # see what runs next
-python3 roadrunner.py start TASK-001   # mark in_progress
-python3 roadrunner.py validate TASK-001 # run validation commands
-python3 roadrunner.py complete TASK-001 --notes "did the thing"
-python3 roadrunner.py block TASK-001 --notes "why it's stuck"
-python3 roadrunner.py reset TASK-001 --summary "boundary marker"
-python3 roadrunner.py health           # system check
-python3 roadrunner.py snapshot         # write context snapshot manually
-python3 roadrunner.py session-start    # emit SessionStart hook JSON (called by the hook)
+# Project lifecycle
+roadrunner init <dir>            # scaffold a new project (tasks/, hooks/, .claude/, CLAUDE.md)
+roadrunner analyze               # validate tasks.yaml: cycles, missing deps, critical path
+
+# Task lifecycle
+roadrunner status                # see all task states
+roadrunner next                  # see what runs next
+roadrunner start TASK-001        # mark in_progress, create roadrunner/TASK-001 branch
+roadrunner validate TASK-001     # run validation commands
+roadrunner complete TASK-001 --notes "did the thing"
+roadrunner commit TASK-001       # scope-aware commit (only files in files_expected + overlay)
+roadrunner block TASK-001 --notes "why it's stuck"
+roadrunner reset TASK-001 --summary "boundary marker"
+
+# Observability + control
+roadrunner watch [--interval N]  # live read-only monitor; redraws every N seconds
+roadrunner health                # system check
+roadrunner reset-iteration       # reset the session iteration counter (--soft default, --hard nukes lifetime)
+
+# Hook entry points (called by Claude Code; you rarely run these by hand)
+roadrunner snapshot              # PreCompact hook — write .context_snapshot.json
+roadrunner post-compact          # PostCompact hook — verify the snapshot survived
+roadrunner session-start         # SessionStart hook — emit additionalContext JSON
+roadrunner check-stop            # Stop hook — decide whether the loop continues
 ```
 
 Or via `just`:
@@ -205,6 +242,7 @@ just test    # pytest only
 just lint    # ruff only
 just status  # roadmap status
 just health  # system check
+just hooks   # chmod +x hooks/*.sh
 ```
 
 ## Task Anatomy
@@ -270,7 +308,18 @@ Every task produces:
 
 ## Using In Another Project
 
-Copy `roadrunner.py`, the `hooks/` directory, and `.claude/settings.json` into your target project. Create your own `tasks/tasks.yaml` and `CLAUDE.md`. See [DESIGN.md](DESIGN.md) for full setup instructions, data-file schema, and the ADR index.
+```bash
+pip install roadrunner-cli
+roadrunner init my-other-project
+```
+
+That writes `tasks/tasks.yaml`, `hooks/`, `.claude/settings.json`, and a
+starter `CLAUDE.md` into `my-other-project/`. Edit the tasks file to
+describe your work and you're ready to launch `claude`. See
+[`docs/examples/hello-roadrunner/`](docs/examples/hello-roadrunner/) for
+a complete worked example, [DESIGN.md](DESIGN.md) for architecture and the
+ADR index, and [docs/configuration.md](docs/configuration.md) for every
+tunable.
 
 ## Trust Boundary
 
