@@ -21,6 +21,8 @@ from typing import Any, TypedDict, cast
 
 import yaml
 
+import rr_session  # session summary observability (Issue 6)
+
 # State persistence lives in rr_state.py — extracted as a bounded module so
 # the highest-risk section of the loop (atomic writes, advisory locking,
 # schema versioning) has its own blast radius. See Issue 5 of the 2026-04-24
@@ -967,6 +969,20 @@ def cmd_health(args: argparse.Namespace) -> None:
     print(
         f"healthy — {len(done)}/{len(tasks)} done, {len(eligible)} eligible, {len(blocked)} blocked"
     )
+    last_session_line = rr_session.health_line()
+    if last_session_line:
+        print(last_session_line)
+
+
+def cmd_sessions(args: argparse.Namespace) -> None:
+    """Pretty-print recent finalized session summaries, newest-first."""
+    limit = int(args.last) if args.last else 10
+    summaries = rr_session.list_sessions(limit=limit)
+    if not summaries:
+        print("No finalized sessions yet.")
+        return
+    blocks = [rr_session.format_session(s) for s in summaries]
+    print("\n\n".join(blocks))
 
 
 def cmd_check_stop(args: argparse.Namespace) -> None:
@@ -990,6 +1006,12 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
     # auto-block (5 attempts) are the real safety nets against runaway loops.
     hook_looping = bool(stdin_data.get("stop_hook_active"))
 
+    def _finalize_session_quiet() -> None:
+        try:
+            rr_session.finalize_current()
+        except OSError as exc:
+            print(f"[roadrunner] session finalize failed: {exc}", file=sys.stderr)
+
     # Serialize concurrent Stop-hook fires so the read→increment→write span in the
     # body below is atomic. SystemExit from any sys.exit() still releases the lock
     # via the context manager's finally.
@@ -1008,6 +1030,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
         )
 
         if iteration >= max_iter:
+            _finalize_session_quiet()
             print(
                 json.dumps(
                     {
@@ -1027,6 +1050,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
         # allow the stop. Otherwise we ignore the flag and keep driving — stalled
         # sessions still get caught by the iteration cap below.
         if hook_looping and not active_task(tasks) and not next_eligible_task(tasks):
+            _finalize_session_quiet()
             sys.exit(0)
 
         # Completion signal: Claude outputs ROADMAP_COMPLETE as the last non-empty line
@@ -1036,6 +1060,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
                 "complete",
                 notes="Roadmap finished — ROADMAP_COMPLETE signal received.",
             )
+            _finalize_session_quiet()
             sys.exit(0)
 
         # Resume in-progress task if Claude responded mid-task
@@ -1407,6 +1432,14 @@ def cmd_session_start(args: argparse.Namespace) -> None:
     if not tasks:
         return
 
+    # Drop a session shell so finalize_current() has a boundary to replay
+    # against. open_session() also finalizes any prior open session, so a
+    # crashed previous run gets summarized here rather than left orphaned.
+    try:
+        rr_session.open_session()
+    except OSError as exc:
+        print(f"[roadrunner] session open failed: {exc}", file=sys.stderr)
+
     state = read_state()
     iteration = state.get("iteration", 0) + 1
 
@@ -1501,6 +1534,16 @@ def main() -> None:
     sub.add_parser("snapshot")
     sub.add_parser("session-start")
 
+    p_sessions = sub.add_parser(
+        "sessions",
+        help="Pretty-print recent session summaries (newest first).",
+    )
+    p_sessions.add_argument(
+        "--last",
+        default=None,
+        help="How many recent sessions to show (default: 10).",
+    )
+
     p_start = sub.add_parser("start")
     p_start.add_argument("task_id")
 
@@ -1567,6 +1610,7 @@ def main() -> None:
         "init": cmd_init,
         "analyze": cmd_analyze,
         "commit": cmd_commit,
+        "sessions": cmd_sessions,
     }
 
     if args.command not in dispatch:
