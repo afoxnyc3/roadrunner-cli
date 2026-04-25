@@ -15,6 +15,8 @@ import re
 import shutil
 import subprocess
 import sys
+import time
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1133,6 +1135,173 @@ def cmd_health(args: argparse.Namespace) -> None:
     )
 
 
+# ── watch: live read-only monitor ─────────────────────────────────────────────
+
+
+def _tail_trace_events(n: int = 5) -> list[dict]:
+    """Return the last ``n`` parseable JSONL records from ``TRACE_LOG``.
+
+    Tolerates a missing file, an empty file, and partial trailing lines from
+    a concurrent in-flight write — bad lines are silently skipped so the
+    watch loop never crashes on a torn append.
+    """
+    if not TRACE_LOG.exists():
+        return []
+    try:
+        with open(TRACE_LOG) as f:
+            lines = list(deque(f, maxlen=n))
+    except OSError:
+        return []
+    out: list[dict] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def _trace_start_ts() -> datetime | None:
+    """Return the timestamp of the first trace event, or None if unavailable."""
+    if not TRACE_LOG.exists():
+        return None
+    try:
+        with open(TRACE_LOG) as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                ts = rec.get("ts") if isinstance(rec, dict) else None
+                if isinstance(ts, str):
+                    try:
+                        return datetime.fromisoformat(ts)
+                    except ValueError:
+                        return None
+                return None
+    except OSError:
+        return None
+    return None
+
+
+def _format_elapsed(start: datetime | None, now: datetime) -> str:
+    if start is None:
+        return "—"
+    delta = now - start
+    total = int(delta.total_seconds())
+    if total < 0:
+        return "—"
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def _render_watch_frame(max_iter: int, now: datetime | None = None) -> str:
+    """Compose one watch frame as a string. Pure function — all IO is best-effort
+    and exceptions render a single error line instead of propagating."""
+    moment = now or datetime.now(timezone.utc)
+    header_ts = moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+    lines: list[str] = []
+    lines.append(f"─ roadrunner watch ─────────────────── {header_ts} ─")
+    lines.append("")
+
+    try:
+        state = read_state()
+    except SystemExit:
+        # read_state() exits on forward-incompat schema; surface and continue.
+        lines.append(" state: unreadable (schema gate)")
+        state = {}  # type: ignore[assignment]
+    session_iter = state.get("session_iteration", 0) if isinstance(state, dict) else 0
+    lifetime_iter = state.get("iteration", 0) if isinstance(state, dict) else 0
+    attempts_map = state.get("attempts_per_task", {}) if isinstance(state, dict) else {}
+
+    lines.append(f" Iteration:   session {session_iter} / {max_iter}     lifetime {lifetime_iter}")
+    lines.append(f" Elapsed:     {_format_elapsed(_trace_start_ts(), moment)}  (since first trace event)")
+
+    try:
+        tasks = load_tasks()
+        tasks_err: str | None = None
+    except (FileNotFoundError, ValueError, OSError) as exc:
+        tasks = []
+        tasks_err = str(exc)
+
+    if tasks_err:
+        lines.append(f" tasks.yaml:  unreadable — {tasks_err}")
+    else:
+        active = active_task(tasks)
+        if active is not None:
+            attempts = attempts_map.get(active["id"], 0) if isinstance(attempts_map, dict) else 0
+            lines.append(f" Active:      {active['id']}  attempt {attempts}/{MAX_TASK_ATTEMPTS}  — {active.get('title', '')}")
+        else:
+            lines.append(" Active:      (no active task)")
+
+        nxt = next_eligible_task(tasks)
+        lines.append(f" Next up:     {nxt['id'] if nxt else '(none eligible)'}")
+
+        counts = {"done": 0, "in_progress": 0, "todo": 0, "blocked": 0}
+        for t in tasks:
+            counts[t.get("status", "todo")] = counts.get(t.get("status", "todo"), 0) + 1
+        lines.append("")
+        lines.append(
+            f" Status:      done {counts['done']}   in_progress {counts['in_progress']}   "
+            f"todo {counts['todo']}   blocked {counts['blocked']}"
+        )
+
+    lines.append("")
+    lines.append(" Recent events (last 5):")
+    events = _tail_trace_events(5)
+    if not events:
+        lines.append("   (no trace events yet)")
+    else:
+        for rec in events:
+            ts_raw = rec.get("ts", "")
+            try:
+                ts = datetime.fromisoformat(ts_raw).strftime("%H:%M:%SZ")
+            except (TypeError, ValueError):
+                ts = "--:--:--"
+            event = str(rec.get("event", "?"))[:22]
+            tid = rec.get("task_id") or "—"
+            lines.append(f"   {ts}  {event:<22} {tid}")
+
+    lines.append("")
+    lines.append(" (Ctrl-C to exit)")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def cmd_watch(args: argparse.Namespace) -> None:
+    """Live read-only monitor. Polls disk state on a fixed interval and
+    redraws a status frame. Exits 0 on Ctrl-C. Never writes state."""
+    interval = max(0.5, float(args.interval))  # floor: --interval 0 must not busy-loop
+    max_iter_env = os.environ.get("ROADMAP_MAX_ITERATIONS")
+    try:
+        max_iter = int(max_iter_env) if max_iter_env else 100
+    except ValueError:
+        max_iter = 100
+
+    try:
+        while True:
+            try:
+                frame = _render_watch_frame(max_iter=max_iter)
+            except Exception as exc:  # observability tool; never crash the loop
+                frame = f"watch: render failed: {exc}\n"
+            sys.stdout.write("\x1b[2J\x1b[H")  # clear screen + cursor home
+            sys.stdout.write(frame)
+            sys.stdout.flush()
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        return
+
+
 def cmd_check_stop(args: argparse.Namespace) -> None:
     """
     Called by Stop hook. Outputs JSON to control whether Claude Code halts.
@@ -1291,6 +1460,91 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
 
 def cmd_snapshot(args: argparse.Namespace) -> None:
     write_context_snapshot()
+
+
+def cmd_post_compact(args: argparse.Namespace) -> None:
+    """Called by the PostCompact hook after Claude Code completes compaction.
+
+    Reads the optional hook payload (trigger, compact_summary) from stdin,
+    then verifies that ``.context_snapshot.json`` is present, parseable, on
+    the expected schema, and contains every required field. Outcome is
+    written to ``trace.jsonl`` as a ``post_compact_verify`` event.
+
+    PostCompact does not support decision control per the Claude Code hooks
+    reference, so this command is purely informational and always exits 0
+    — observability must never break the control loop.
+    """
+    required_fields = (
+        "schema_version",
+        "snapshot_at",
+        "current_task",
+        "iteration",
+        "next_eligible",
+        "status_summary",
+    )
+
+    trigger: str | None = None
+    compact_summary: str | None = None
+    try:
+        if not sys.stdin.isatty():
+            raw = sys.stdin.read()
+            if raw.strip():
+                payload = json.loads(raw)
+                if isinstance(payload, dict):
+                    raw_trigger = payload.get("trigger")
+                    if isinstance(raw_trigger, str):
+                        trigger = raw_trigger
+                    raw_summary = payload.get("compact_summary")
+                    if isinstance(raw_summary, str):
+                        compact_summary = raw_summary
+    except (json.JSONDecodeError, OSError, ValueError):
+        # Malformed stdin must not break the loop; the missing fields will
+        # surface in the trace event below.
+        pass
+
+    snapshot_path = ROOT / ".context_snapshot.json"
+    success = False
+    missing: list[str] = []
+    schema_observed: Any = None
+    snapshot_data: dict[str, Any] = {}
+
+    if not snapshot_path.exists():
+        missing = ["<file-missing>"]
+    else:
+        try:
+            parsed = json.loads(snapshot_path.read_text())
+            if isinstance(parsed, dict):
+                snapshot_data = parsed
+                missing = [f for f in required_fields if f not in snapshot_data]
+                schema_observed = snapshot_data.get("schema_version")
+                if not missing and schema_observed == SNAPSHOT_SCHEMA_VERSION:
+                    success = True
+            else:
+                missing = ["<not-an-object>"]
+        except (json.JSONDecodeError, OSError):
+            missing = ["<unreadable>"]
+
+    extra: dict[str, Any] = {"success": success}
+    if trigger is not None:
+        extra["trigger"] = trigger
+    if compact_summary is not None:
+        # Bound the trace line — compaction summaries can be long.
+        extra["compact_summary"] = compact_summary[:500]
+    if missing:
+        extra["missing_fields"] = missing
+    if schema_observed is not None and schema_observed != SNAPSHOT_SCHEMA_VERSION:
+        extra["schema_mismatch"] = {
+            "expected": SNAPSHOT_SCHEMA_VERSION,
+            "got": schema_observed,
+        }
+    if snapshot_data.get("snapshot_at"):
+        extra["snapshot_at"] = snapshot_data["snapshot_at"]
+
+    trace_event(
+        "post_compact_verify",
+        task_id=snapshot_data.get("current_task"),
+        extra=extra,
+    )
 
 
 _INIT_TASKS_TEMPLATE = """\
@@ -1714,6 +1968,10 @@ def main() -> None:
     sub.add_parser("health")
     sub.add_parser("snapshot")
     sub.add_parser("session-start")
+    sub.add_parser(
+        "post-compact",
+        help="PostCompact hook entry: verify .context_snapshot.json after compaction",
+    )
 
     p_start = sub.add_parser("start")
     p_start.add_argument("task_id")
@@ -1769,6 +2027,17 @@ def main() -> None:
         help="Path to a tasks.yaml file (defaults to the project tasks/tasks.yaml)",
     )
 
+    p_watch = sub.add_parser(
+        "watch",
+        help="Live read-only monitor: poll disk state and redraw a status frame.",
+    )
+    p_watch.add_argument(
+        "--interval",
+        type=float,
+        default=5.0,
+        help="Seconds between frames (floored at 0.5). Default: 5.",
+    )
+
     p_commit = sub.add_parser(
         "commit",
         help="Scope-aware commit: stages only files in the task's files_expected + roadrunner overlay",
@@ -1796,9 +2065,11 @@ def main() -> None:
         "check-stop": cmd_check_stop,
         "snapshot": cmd_snapshot,
         "session-start": cmd_session_start,
+        "post-compact": cmd_post_compact,
         "init": cmd_init,
         "analyze": cmd_analyze,
         "commit": cmd_commit,
+        "watch": cmd_watch,
     }
 
     if args.command not in dispatch:

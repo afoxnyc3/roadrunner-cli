@@ -174,3 +174,87 @@ Split the iteration counter so the runaway cap is per-session instead of lifetim
 ## 2026-04-24T16:38:42.506718+00:00 | ALL → complete
 Roadmap finished — ROADMAP_COMPLETE signal received.
 
+## 2026-04-25T00:42:17.515015+00:00 | ROAD-005 → in_progress
+
+
+## 2026-04-25T00:52:35.253755+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:11:50.452058+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:23:42.612161+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:23:49.452455+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:23:57.539386+00:00 | ROAD-005 → blocked
+Auto-blocked after 5 attempts without completion.
+
+## 2026-04-25T02:23:57.631458+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:24:00.973332+00:00 | ROAD-005 → done
+Added PostCompact hook (hooks/postcompact_hook.sh) wired to new 'post-compact' subcommand in roadrunner.py that reads stdin JSON (trigger, compact_summary), verifies .context_snapshot.json (schema_version + required fields), and logs a post_compact_verify trace event. Registered under PostCompact in .claude/settings.json. Hook is side-effect only per hooks reference — always exits 0.
+
+## 2026-04-25T02:24:17.324539+00:00 | ROAD-006 → in_progress
+
+
+## 2026-04-25T02:26:26.762483+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:26:39.665801+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:26:42.946509+00:00 | ROAD-006 → done
+Added CONTRIBUTING.md at project root covering dev setup (editable pip + requirements.txt), running tests/lint/CI-gate, PR workflow (branch naming, Conventional Commits, reviewer expectations), and two recipes: adding a roadrunner subcommand (argparse + dispatch) and adding a hook (bash wrapper + settings.json + Python handler). Extended docs/configuration.md with a Tunables table covering every module-level knob (DEFAULT_VALIDATION_TIMEOUT, MAX_TASK_ATTEMPTS, TASKS_BACKUP_KEEP, LOG_ROTATE_BYTES, LOG_RETAIN_DAYS, STATE_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION), env vars (ROADMAP_MAX_ITERATIONS, CLAUDE_PROJECT_DIR), a full tasks.yaml field reference (required vs optional, types, defaults), and both state schemas (.roadmap_state.json v2 and .context_snapshot.json v1).
+
+## 2026-04-25T02:33:21.859973+00:00 | ROAD-007 → in_progress
+
+
+## 2026-04-25T02:35:14.384997+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:35:30.583571+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:35:45.329759+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:35:50.729820+00:00 | ROAD-007 → done
+Added 'roadrunner watch' subcommand: read-only live monitor that polls .roadmap_state.json, tasks/tasks.yaml, and logs/trace.jsonl on a fixed interval (default 5s, floored at 0.5s) and redraws a status frame showing session/lifetime iteration, max-iter cap (from ROADMAP_MAX_ITERATIONS), elapsed time since first trace event, active task with attempt count, next eligible, status counts, and last 5 trace events. ANSI clear (no curses), stdlib only (added 'time' and 'collections.deque'), Ctrl-C exits 0. Pure helpers _tail_trace_events / _trace_start_ts / _format_elapsed / _render_watch_frame are unit-tested; subprocess test confirms clean SIGINT exit. 7 new tests, 150 total passing.
+
+## 2026-04-25T02:41:59.373335+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:43:48.346465+00:00 | ROAD-008 → in_progress
+
+
+## 2026-04-25T02:45:00.727313+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:45:32.250658+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T02:45:37.538426+00:00 | ROAD-008 → done
+Added .github/workflows/publish.yml: triggers on v* tag pushes plus workflow_dispatch (rehearsal-only — publish job gated on real tag push), runs full pytest matrix (3.10/3.11/3.12), builds sdist+wheel via python -m build, publishes through pypa/gh-action-pypi-publish@release/v1 using OIDC Trusted Publishing (no API tokens). Bound to a 'pypi' GitHub Environment with id-token: write so org admins can require manual approval. Added docs/release.md covering one-time PyPI Trusted Publisher setup, GitHub Environment config, the per-release semver+tag checklist, workflow_dispatch rehearsal flow, local build smoke test, and rollback/yank procedure. Added 'build>=1.0' to dev deps in pyproject.toml. Verified: all 5 gated validators pass, plus python3 -m build --wheel --outdir /tmp/rr_build_test exits 0 (produced roadrunner_cli-0.1.0-py3-none-any.whl). Note for audit pass: .gitignore is missing build/, dist/, *.egg-info patterns — worth adding in the Phase-2 hygiene sweep but out of scope here.
+
+## 2026-04-25T03:47:26.520642+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T13:19:11.170227+00:00 | ROAD-009 → in_progress
+
+
+## 2026-04-25T13:20:40.837154+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T13:20:57.500100+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T13:21:12.700756+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-04-25T13:21:18.087570+00:00 | ROAD-009 → done
+Added docs/examples/hello-roadrunner/ as a self-contained 3-task demo. tasks/tasks.yaml defines DEMO-001 (count_words function), DEMO-002 (CLI entry point depending on DEMO-001), and DEMO-003 (pytest tests depending on DEMO-002). Each demo task has real validation_commands (file existence, behavioral assertions via python3 -c, pytest) so analyze emits no warnings — passes 'No issues found'. CLAUDE.md is a minimal operating-contract template: per-cycle steps, completion sentinel, file scope, validation-as-gate. README.md walks through copy → roadrunner init → status/analyze → claude in 27 lines (under the 30-line acceptance cap). Uses the published 'pip install roadrunner-cli' + 'roadrunner init' path that ROAD-001/002/008 enable. All 5 task validators pass; full pytest suite still 150/150.
+
