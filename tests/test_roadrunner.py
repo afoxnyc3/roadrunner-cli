@@ -1557,3 +1557,93 @@ class TestSessionStart:
         ctx = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         assert "Blocked" in ctx or "blocked" in ctx
         assert "TASK-002" in ctx or "TASK-003" in ctx
+
+
+class TestWatch:
+    """ROAD-007: read-only live monitor."""
+
+    def test_tail_trace_events_missing_file(self, tmp_project):
+        # tmp_project sets TRACE_LOG to a path that does not exist yet.
+        assert not roadrunner.TRACE_LOG.exists()
+        assert roadrunner._tail_trace_events(5) == []
+
+    def test_tail_trace_events_skips_bad_lines(self, tmp_project):
+        roadrunner.TRACE_LOG.write_text(
+            '{"ts":"2026-04-25T01:00:00+00:00","event":"a","task_id":"T-1"}\n'
+            "this is not json\n"
+            '{"ts":"2026-04-25T01:00:01+00:00","event":"b","task_id":"T-2"}\n'
+            '{"ts":"2026-04-25T01:00:02+00:00","event":"c","task_id":"T-3"}\n'
+        )
+        events = roadrunner._tail_trace_events(5)
+        assert [e["event"] for e in events] == ["a", "b", "c"]
+
+    def test_tail_trace_events_caps_at_n(self, tmp_project):
+        lines = [
+            f'{{"ts":"2026-04-25T01:00:0{i}+00:00","event":"e{i}","task_id":null}}\n'
+            for i in range(8)
+        ]
+        roadrunner.TRACE_LOG.write_text("".join(lines))
+        events = roadrunner._tail_trace_events(3)
+        assert len(events) == 3
+        assert [e["event"] for e in events] == ["e5", "e6", "e7"]
+
+    def test_render_watch_frame_contains_expected_sections(self, tmp_project):
+        # Seed an in-progress active task so the Active line is meaningful.
+        tasks = roadrunner.load_tasks()
+        for t in tasks:
+            if t["id"] == "TASK-002":
+                t["status"] = "in_progress"
+        roadrunner.save_tasks(tasks)
+        roadrunner.write_state("TASK-002", iteration=42, attempts={"TASK-002": 2})
+        roadrunner.TRACE_LOG.write_text(
+            '{"ts":"2026-04-25T00:00:00+00:00","event":"task_start","task_id":"TASK-002"}\n'
+        )
+
+        frame = roadrunner._render_watch_frame(max_iter=100)
+
+        assert "Iteration:" in frame
+        assert "Status:" in frame
+        assert "Active:" in frame
+        assert "TASK-002" in frame
+        assert "(Ctrl-C to exit)" in frame
+        # Status counts visible
+        assert "done 1" in frame
+        assert "in_progress 1" in frame
+        assert "todo 1" in frame
+        assert "blocked 0" in frame
+        # Recent events line includes our seeded event
+        assert "task_start" in frame
+
+    def test_render_watch_frame_empty_trace(self, tmp_project):
+        # No state file, no trace file — should still render without raising.
+        frame = roadrunner._render_watch_frame(max_iter=100)
+        assert "Iteration:" in frame
+        assert "(no trace events yet)" in frame
+        assert "Elapsed:     —" in frame
+
+    def test_format_elapsed_hms(self):
+        from datetime import timezone as _tz
+        start = roadrunner.datetime(2026, 4, 25, 0, 0, 0, tzinfo=_tz.utc)
+        now = roadrunner.datetime(2026, 4, 25, 1, 23, 45, tzinfo=_tz.utc)
+        assert roadrunner._format_elapsed(start, now) == "01:23:45"
+        assert roadrunner._format_elapsed(None, now) == "—"
+
+    def test_watch_subprocess_clean_sigint(self):
+        """The loop must exit 0 on SIGINT — covers the explicit acceptance
+        criterion 'KeyboardInterrupt exits cleanly with exit code 0'."""
+        import signal as _signal
+        import time as _time
+        proc = subprocess.Popen(
+            [sys.executable, "roadrunner.py", "watch", "--interval", "0.5"],
+            cwd=str(Path(roadrunner.__file__).parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        _time.sleep(2)
+        proc.send_signal(_signal.SIGINT)
+        try:
+            rc = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            pytest.fail("watch did not exit within 5s of SIGINT")
+        assert rc == 0

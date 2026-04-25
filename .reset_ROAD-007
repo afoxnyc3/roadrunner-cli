@@ -1,0 +1,5 @@
+{
+  "task_id": "ROAD-007",
+  "summary": "roadrunner watch: read-only live monitor; ANSI clear, stdlib only, Ctrl-C exits 0.",
+  "at": "2026-04-25T02:35:53.460598+00:00"
+}
