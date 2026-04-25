@@ -40,9 +40,9 @@ dev = [
 roadrunner = "roadrunner:main"
 
 [project.urls]
-Homepage = "https://github.com/afoxnyc/roadrunner-cli"
-Repository = "https://github.com/afoxnyc/roadrunner-cli"
-Issues = "https://github.com/afoxnyc/roadrunner-cli/issues"
+Homepage = "https://github.com/afoxnyc3/roadrunner-cli"
+Repository = "https://github.com/afoxnyc3/roadrunner-cli"
+Issues = "https://github.com/afoxnyc3/roadrunner-cli/issues"
 
 [tool.setuptools]
 py-modules = ["roadrunner"]

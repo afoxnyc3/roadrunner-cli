@@ -261,3 +261,6 @@ Added docs/examples/hello-roadrunner/ as a self-contained 3-task demo. tasks/tas
 ## 2026-04-25T22:11:39.913965+00:00 | ALL → complete
 Roadmap finished — ROADMAP_COMPLETE signal received.
 
+## 2026-04-25T22:14:14.574507+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+

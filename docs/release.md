@@ -33,7 +33,7 @@ For the **production** PyPI:
 1. Go to <https://pypi.org/manage/account/publishing/>.
 2. Under **Add a new pending publisher**, fill in:
    - **PyPI Project Name**: `roadrunner-cli`
-   - **Owner**: `afoxnyc` (the GitHub user/org that owns the repo)
+   - **Owner**: `afoxnyc3` (the GitHub user/org that owns the repo)
    - **Repository name**: `roadrunner-cli`
    - **Workflow name**: `publish.yml`
    - **Environment name**: `pypi`

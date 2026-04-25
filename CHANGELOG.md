@@ -51,8 +51,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Repo URLs in README corrected from the typo'd `afoxnyc3/roadrunner-cli` to
-  `afoxnyc/roadrunner-cli`.
+- Repo URLs corrected to match the actual GitHub remote
+  `afoxnyc3/roadrunner-cli` (pyproject.toml previously had a typo'd
+  `afoxnyc/...`; README, CONTRIBUTING.md, and docs/release.md aligned).
 - `.gitignore` now covers `build/`, `dist/`, `*.egg-info/`, `.mypy_cache/`,
   and `.ruff_cache/`.
 

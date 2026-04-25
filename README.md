@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/afoxnyc/roadrunner-cli/actions/workflows/ci.yml"><img src="https://github.com/afoxnyc/roadrunner-cli/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
+  <a href="https://github.com/afoxnyc3/roadrunner-cli/actions/workflows/ci.yml"><img src="https://github.com/afoxnyc3/roadrunner-cli/actions/workflows/ci.yml/badge.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue" alt="Python" />
   <img src="https://img.shields.io/badge/tests-passing-brightgreen" alt="Tests" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey" alt="Platform" />
@@ -89,7 +89,7 @@ a three-task demo (function → CLI → tests) you can copy and run end-to-end.
 ### From source
 
 ```bash
-git clone https://github.com/afoxnyc/roadrunner-cli.git
+git clone https://github.com/afoxnyc3/roadrunner-cli.git
 cd roadrunner-cli
 pip install -e '.[dev]'    # editable install + pytest + ruff + build
 just hooks                 # chmod +x hooks/*.sh
