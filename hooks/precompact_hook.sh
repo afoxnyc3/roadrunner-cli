@@ -11,10 +11,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-if command -v roadrunner >/dev/null 2>&1; then
-    RR=(roadrunner)
-elif [ -f "$PROJECT_ROOT/roadrunner.py" ]; then
+if [ -f "$PROJECT_ROOT/roadrunner.py" ]; then
     RR=(python3 "$PROJECT_ROOT/roadrunner.py")
+elif command -v roadrunner >/dev/null 2>&1; then
+    RR=(roadrunner)
 else
     echo "[roadrunner] cannot find 'roadrunner' on PATH and no roadrunner.py in $PROJECT_ROOT" >&2
     exit 0
