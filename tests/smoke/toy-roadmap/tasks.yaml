@@ -1,0 +1,38 @@
+tasks:
+  - id: SMOKE-001
+    title: "Toy task one"
+    status: todo
+    depends_on: []
+    goal: "Trivial task used by tests/smoke/run_loop.py to drive the loop state machine."
+    acceptance_criteria:
+      - "marker file one exists"
+    validation_commands:
+      - "true"
+    files_expected:
+      - "smoke_one.txt"
+
+  - id: SMOKE-002
+    title: "Toy task two"
+    status: todo
+    depends_on:
+      - SMOKE-001
+    goal: "Trivial task used by tests/smoke/run_loop.py."
+    acceptance_criteria:
+      - "marker file two exists"
+    validation_commands:
+      - "true"
+    files_expected:
+      - "smoke_two.txt"
+
+  - id: SMOKE-003
+    title: "Toy task three"
+    status: todo
+    depends_on:
+      - SMOKE-002
+    goal: "Trivial task used by tests/smoke/run_loop.py."
+    acceptance_criteria:
+      - "marker file three exists"
+    validation_commands:
+      - "true"
+    files_expected:
+      - "smoke_three.txt"
