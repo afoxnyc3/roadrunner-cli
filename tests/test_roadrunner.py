@@ -12,6 +12,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import roadrunner
+import rr_session
 import rr_state  # state persistence — extracted Issue 5; canonical home of STATE_FILE/STATE_LOCK
 
 
@@ -99,6 +100,21 @@ def tmp_project(tmp_path):
     rr_state.STATE_FILE = tmp_path / ".roadmap_state.json"
     rr_state.STATE_LOCK = tmp_path / ".roadmap_state.lock"
 
+    # Same rebind for rr_session — its module-level constants would otherwise
+    # write summaries into the real project's logs/sessions/ during tests.
+    orig_session = {
+        "ROOT": rr_session.ROOT,
+        "LOGS_DIR": rr_session.LOGS_DIR,
+        "TRACE_LOG": rr_session.TRACE_LOG,
+        "SESSIONS_DIR": rr_session.SESSIONS_DIR,
+        "CURRENT_POINTER": rr_session.CURRENT_POINTER,
+    }
+    rr_session.ROOT = tmp_path
+    rr_session.LOGS_DIR = logs_dir
+    rr_session.TRACE_LOG = logs_dir / "trace.jsonl"
+    rr_session.SESSIONS_DIR = logs_dir / "sessions"
+    rr_session.CURRENT_POINTER = logs_dir / "sessions" / ".current"
+
     yield tmp_path
 
     # Restore
@@ -106,6 +122,8 @@ def tmp_project(tmp_path):
         setattr(roadrunner, k, v)
     for k, v in orig_state.items():
         setattr(rr_state, k, v)
+    for k, v in orig_session.items():
+        setattr(rr_session, k, v)
 
 
 # ── Schema validation ────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ __pycache__/
 logs/trace.jsonl
 logs/trace.jsonl.*
 logs/CHANGELOG.md.*
+logs/sessions/
 tasks/tasks.yaml.bak
 tasks/tasks.yaml.bak.*
 tasks/tasks.yaml.tmp
