@@ -1,0 +1,63 @@
+# hello-roadrunner — a 3-task demo roadmap.
+# Build a tiny word-counter CLI end-to-end so you can watch the loop work.
+
+project_base: main
+push_on_complete: none
+
+tasks:
+  - id: DEMO-001
+    title: "Create word_counter.py with count_words(text)"
+    status: todo
+    depends_on: []
+    goal: |
+      Add a module `word_counter.py` exporting one function:
+      `count_words(text: str) -> int` that returns the number of
+      whitespace-separated tokens in `text`. An empty string returns 0.
+    acceptance_criteria:
+      - "word_counter.py exists at the project root"
+      - "count_words('hello world') returns 2"
+      - "count_words('') returns 0"
+    validation_commands:
+      - "test -f word_counter.py"
+      - "python3 -c \"from word_counter import count_words; assert count_words('hello world') == 2; assert count_words('') == 0\""
+    files_expected:
+      - "word_counter.py"
+
+  - id: DEMO-002
+    title: "Add a CLI entry point to word_counter.py"
+    status: todo
+    depends_on:
+      - DEMO-001
+    goal: |
+      Extend `word_counter.py` so `python3 word_counter.py` reads stdin,
+      prints the integer word count, and exits 0. The `count_words`
+      function from DEMO-001 must remain importable and unchanged in
+      signature.
+    acceptance_criteria:
+      - "echo 'one two three' | python3 word_counter.py prints 3"
+      - "Empty stdin prints 0"
+    validation_commands:
+      - "test \"$(echo 'one two three' | python3 word_counter.py)\" = '3'"
+      - "test \"$(printf '' | python3 word_counter.py)\" = '0'"
+    files_expected:
+      - "word_counter.py"
+
+  - id: DEMO-003
+    title: "Add pytest tests for word_counter"
+    status: todo
+    depends_on:
+      - DEMO-002
+    goal: |
+      Add `test_word_counter.py` with at least three pytest test cases
+      covering: a normal sentence, an empty string, and extra whitespace
+      (e.g. "  a   b  " should count 2). All tests must pass.
+    acceptance_criteria:
+      - "test_word_counter.py exists"
+      - "pytest test_word_counter.py exits 0"
+      - "At least 3 test functions are defined"
+    validation_commands:
+      - "test -f test_word_counter.py"
+      - "python3 -m pytest test_word_counter.py -q"
+      - "test \"$(grep -c '^def test_' test_word_counter.py)\" -ge 3"
+    files_expected:
+      - "test_word_counter.py"
