@@ -22,6 +22,22 @@ from typing import Any, TypedDict, cast
 
 import yaml
 
+# State persistence lives in rr_state.py — extracted as a bounded module so
+# the highest-risk section of the loop (atomic writes, advisory locking,
+# schema versioning) has its own blast radius. See Issue 5 of the 2026-04-24
+# resolution plan. The names below are re-exported so the public
+# ``roadrunner`` import surface is unchanged.
+from rr_state import (  # noqa: F401 — re-exports
+    STATE_FILE,
+    STATE_LOCK,
+    STATE_SCHEMA_VERSION,
+    RoadmapState,
+    _exclusive_state_lock,
+    increment_attempts,
+    read_state,
+    write_state,
+)
+
 try:
     import fcntl  # POSIX advisory locking for the state file; Windows is not a target platform.
 except ImportError:  # pragma: no cover - Windows fallback keeps the module importable
@@ -48,12 +64,9 @@ class Task(TypedDict, total=False):
     notes: str
 
 
-class RoadmapState(TypedDict, total=False):
-    current_task_id: str | None
-    iteration: int
-    attempts_per_task: dict[str, int]
-    updated_at: str
-    base_branch: str
+# RoadmapState is now defined in rr_state.py and re-exported at the top of
+# this module. Kept the class name in the public namespace for tests and any
+# downstream consumers that did `from roadrunner import RoadmapState`.
 
 
 class ValidationResult(TypedDict, total=False):
@@ -70,10 +83,9 @@ ROOT = Path(__file__).parent
 TASKS_FILE = ROOT / "tasks" / "tasks.yaml"
 LOGS_DIR = ROOT / "logs"
 CHANGELOG = LOGS_DIR / "CHANGELOG.md"
-STATE_FILE = ROOT / ".roadmap_state.json"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
 TASKS_BACKUP = TASKS_FILE.with_suffix(".yaml.bak")
-STATE_LOCK = ROOT / ".roadmap_state.lock"  # sibling advisory lockfile; survives os.replace
+# STATE_FILE and STATE_LOCK are owned by rr_state.py and re-exported above.
 LOGS_DIR.mkdir(exist_ok=True)
 
 
@@ -85,7 +97,7 @@ MAX_TASK_ATTEMPTS = 5              # auto-block a task after this many resume cy
 TASKS_BACKUP_KEEP = 5              # number of rolling tasks.yaml.bak.N copies to retain
 LOG_ROTATE_BYTES = 10 * 1024 * 1024  # rotate when a log file exceeds 10 MB
 LOG_RETAIN_DAYS = 7                # delete rotated/compressed logs older than this
-STATE_SCHEMA_VERSION = 1           # bump when .roadmap_state.json format changes incompatibly
+# STATE_SCHEMA_VERSION is owned by rr_state.py and re-exported above.
 SNAPSHOT_SCHEMA_VERSION = 1        # bump when .context_snapshot.json format changes incompatibly
 
 # Built from two fragments so the sentinel string never appears literally in the source
@@ -489,94 +501,10 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
 
 
 # ── State management ──────────────────────────────────────────────────────────
-
-
-def write_state(
-    current_task_id: str | None,
-    iteration: int,
-    attempts: dict | None = None,
-    extra: dict | None = None,
-) -> None:
-    state = {
-        "schema_version": STATE_SCHEMA_VERSION,
-        "current_task_id": current_task_id,
-        "iteration": iteration,
-        "attempts_per_task": attempts or {},
-        "updated_at": _now(),
-    }
-    if extra:
-        state.update(extra)
-    tmp_path = STATE_FILE.with_suffix(".json.tmp")
-    with open(tmp_path, "w") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, STATE_FILE)
-
-
-def read_state() -> RoadmapState:
-    default: RoadmapState = {"current_task_id": None, "iteration": 0, "attempts_per_task": {}}
-    if not STATE_FILE.exists():
-        return default
-    try:
-        data = json.loads(STATE_FILE.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        # Corrupt or unreadable state must not wedge the loop; reconverge from defaults.
-        print(
-            f"[roadrunner] state file unreadable ({exc}); falling back to defaults.",
-            file=sys.stderr,
-        )
-        return default
-    if not isinstance(data, dict):
-        print(
-            "[roadrunner] state file is not a JSON object; falling back to defaults.",
-            file=sys.stderr,
-        )
-        return default
-    # Schema gate: missing version → legacy v1 (backward compatible). Newer version
-    # than we understand → exit immediately so the caller never overwrites the
-    # forward-compat state file. Operator fix: upgrade this tool or migrate state.
-    version = data.get("schema_version", 1)
-    if not isinstance(version, int) or version > STATE_SCHEMA_VERSION:
-        print(
-            f"[roadrunner] state file has unknown schema_version={version!r}; "
-            f"this version of roadrunner only understands up to {STATE_SCHEMA_VERSION}. "
-            f"Upgrade roadrunner or manually migrate {STATE_FILE.name} before continuing.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    data.setdefault("attempts_per_task", {})
-    data.setdefault("current_task_id", None)
-    data.setdefault("iteration", 0)
-    return cast(RoadmapState, data)
-
-
-def increment_attempts(state: RoadmapState, task_id: str) -> int:
-    attempts = state.get("attempts_per_task", {})
-    attempts[task_id] = attempts.get(task_id, 0) + 1
-    state["attempts_per_task"] = attempts
-    return attempts[task_id]
-
-
-@contextmanager
-def _exclusive_state_lock():
-    """POSIX advisory lock around the state file's read→modify→write window.
-
-    Uses a sibling lockfile so the lock object is not wiped by `os.replace` of the
-    state file itself. On Windows (where `fcntl` is unavailable) this degrades to
-    a no-op since the project only supports POSIX; multi-operator concurrency is
-    a documented non-goal but a single flock closes the accidental-concurrency hole.
-    """
-    if fcntl is None:
-        yield
-        return
-    STATE_LOCK.touch(exist_ok=True)
-    with open(STATE_LOCK, "r+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+# write_state, read_state, increment_attempts, and _exclusive_state_lock are
+# owned by rr_state.py (Issue 5 extraction) and re-exported at the top of this
+# module. RoadmapState, STATE_FILE, STATE_LOCK, and STATE_SCHEMA_VERSION are
+# also re-exported. Public API is unchanged.
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
