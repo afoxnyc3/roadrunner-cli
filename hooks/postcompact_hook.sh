@@ -13,6 +13,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+if command -v roadrunner >/dev/null 2>&1; then
+    RR=(roadrunner)
+elif [ -f "$PROJECT_ROOT/roadrunner.py" ]; then
+    RR=(python3 "$PROJECT_ROOT/roadrunner.py")
+else
+    exit 0  # observability hook; never block on missing CLI
+fi
+
 # Pipe stdin through; never let observability failures break the loop.
-python3 "$PROJECT_ROOT/roadrunner.py" post-compact || true
+"${RR[@]}" post-compact || true
 exit 0

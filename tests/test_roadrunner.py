@@ -12,6 +12,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 import roadrunner
+import rr_session
+import rr_state  # state persistence — extracted Issue 5; canonical home of STATE_FILE/STATE_LOCK
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -69,6 +71,12 @@ def tmp_project(tmp_path):
     # Patch module-level paths. TASKS_BACKUP is derived from TASKS_FILE at
     # module import time, so it must be re-derived here — otherwise save_tasks
     # writes backups to the real project dir and contaminates subsequent tests.
+    #
+    # After Issue 5, STATE_FILE / STATE_LOCK are owned by rr_state.py. The
+    # roadrunner module re-exports them, but the read/write functions look at
+    # rr_state's module-globals — so the canonical rebind site is rr_state.
+    # roadrunner.STATE_FILE is rebound too because some tests reach into it
+    # directly (e.g. ``roadrunner.STATE_FILE.write_text("{not json")``).
     orig = {
         "ROOT": roadrunner.ROOT,
         "TASKS_FILE": roadrunner.TASKS_FILE,
@@ -78,6 +86,10 @@ def tmp_project(tmp_path):
         "STATE_FILE": roadrunner.STATE_FILE,
         "TRACE_LOG": roadrunner.TRACE_LOG,
     }
+    orig_state = {
+        "STATE_FILE": rr_state.STATE_FILE,
+        "STATE_LOCK": rr_state.STATE_LOCK,
+    }
     roadrunner.ROOT = tmp_path
     roadrunner.TASKS_FILE = tasks_file
     roadrunner.TASKS_BACKUP = tasks_file.with_suffix(".yaml.bak")
@@ -85,12 +97,33 @@ def tmp_project(tmp_path):
     roadrunner.CHANGELOG = logs_dir / "CHANGELOG.md"
     roadrunner.STATE_FILE = tmp_path / ".roadmap_state.json"
     roadrunner.TRACE_LOG = logs_dir / "trace.jsonl"
+    rr_state.STATE_FILE = tmp_path / ".roadmap_state.json"
+    rr_state.STATE_LOCK = tmp_path / ".roadmap_state.lock"
+
+    # Same rebind for rr_session — its module-level constants would otherwise
+    # write summaries into the real project's logs/sessions/ during tests.
+    orig_session = {
+        "ROOT": rr_session.ROOT,
+        "LOGS_DIR": rr_session.LOGS_DIR,
+        "TRACE_LOG": rr_session.TRACE_LOG,
+        "SESSIONS_DIR": rr_session.SESSIONS_DIR,
+        "CURRENT_POINTER": rr_session.CURRENT_POINTER,
+    }
+    rr_session.ROOT = tmp_path
+    rr_session.LOGS_DIR = logs_dir
+    rr_session.TRACE_LOG = logs_dir / "trace.jsonl"
+    rr_session.SESSIONS_DIR = logs_dir / "sessions"
+    rr_session.CURRENT_POINTER = logs_dir / "sessions" / ".current"
 
     yield tmp_path
 
     # Restore
     for k, v in orig.items():
         setattr(roadrunner, k, v)
+    for k, v in orig_state.items():
+        setattr(rr_state, k, v)
+    for k, v in orig_session.items():
+        setattr(rr_session, k, v)
 
 
 # ── Schema validation ────────────────────────────────────────────────────────

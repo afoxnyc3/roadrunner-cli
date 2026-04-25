@@ -82,6 +82,8 @@ class TestSessionStartHook:
         hooks_dir.mkdir()
         shutil.copy2(HOOKS_DIR / "session_start_hook.sh", hooks_dir / "session_start_hook.sh")
         shutil.copy2(PROJECT_ROOT / "roadrunner.py", tmp_path / "roadrunner.py")
+        shutil.copy2(PROJECT_ROOT / "rr_state.py", tmp_path / "rr_state.py")
+        shutil.copy2(PROJECT_ROOT / "rr_session.py", tmp_path / "rr_session.py")
         (tmp_path / "tasks").mkdir()
         (tmp_path / "tasks" / "tasks.yaml").write_text("tasks: []\n")
         result = subprocess.run(
@@ -182,8 +184,12 @@ class TestCrashRecoveryMidTask:
         import yaml as _yaml
 
         # Stage an isolated project tree with a copy of roadrunner.py
+        # plus its extracted state module (rr_state.py) and the
+        # session-summary module (Issue 6).
         self._write_min_project(tmp_path)
         shutil.copy2(PROJECT_ROOT / "roadrunner.py", tmp_path / "roadrunner.py")
+        shutil.copy2(PROJECT_ROOT / "rr_state.py", tmp_path / "rr_state.py")
+        shutil.copy2(PROJECT_ROOT / "rr_session.py", tmp_path / "rr_session.py")
 
         # Step 1: start the task in one subprocess (simulating one loop iteration)
         start = subprocess.run(

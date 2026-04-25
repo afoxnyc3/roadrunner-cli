@@ -11,5 +11,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
+if command -v roadrunner >/dev/null 2>&1; then
+    RR=(roadrunner)
+elif [ -f "$PROJECT_ROOT/roadrunner.py" ]; then
+    RR=(python3 "$PROJECT_ROOT/roadrunner.py")
+else
+    echo "[roadrunner] cannot find 'roadrunner' on PATH and no roadrunner.py in $PROJECT_ROOT" >&2
+    exit 0
+fi
+
 # Write snapshot and emit additionalContext JSON for Claude
-python3 "$PROJECT_ROOT/roadrunner.py" snapshot
+"${RR[@]}" snapshot

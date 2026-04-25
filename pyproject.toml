@@ -45,7 +45,7 @@ Repository = "https://github.com/afoxnyc3/roadrunner-cli"
 Issues = "https://github.com/afoxnyc3/roadrunner-cli/issues"
 
 [tool.setuptools]
-py-modules = ["roadrunner"]
+py-modules = ["roadrunner", "rr_state", "rr_session"]
 
 [tool.ruff]
 line-length = 140

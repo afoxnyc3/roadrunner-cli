@@ -17,12 +17,29 @@ import subprocess
 import sys
 import time
 from collections import deque
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TypedDict, cast
 
 import yaml
+
+import rr_session  # session summary observability (Issue 6)
+
+# State persistence lives in rr_state.py — extracted as a bounded module so
+# the highest-risk section of the loop (atomic writes, advisory locking,
+# schema versioning) has its own blast radius. See Issue 5 of the 2026-04-24
+# resolution plan. The names below are re-exported so the public
+# ``roadrunner`` import surface is unchanged.
+from rr_state import (  # noqa: F401 — re-exports
+    STATE_FILE,
+    STATE_LOCK,
+    STATE_SCHEMA_VERSION,
+    RoadmapState,
+    _exclusive_state_lock,
+    increment_attempts,
+    read_state,
+    write_state,
+)
 
 try:
     import fcntl  # POSIX advisory locking for the state file; Windows is not a target platform.
@@ -50,13 +67,10 @@ class Task(TypedDict, total=False):
     notes: str
 
 
-class RoadmapState(TypedDict, total=False):
-    current_task_id: str | None
-    iteration: int              # lifetime-cumulative counter (audit trail)
-    session_iteration: int      # per-session counter; reset on SessionStart; gates the iteration cap
-    attempts_per_task: dict[str, int]
-    updated_at: str
-    base_branch: str
+# RoadmapState is defined in rr_state.py and re-exported at the top of this
+# module. Kept the class name in the public namespace for tests and any
+# downstream consumers that did `from roadrunner import RoadmapState`. The
+# `session_iteration` field (ROAD-010, schema v2) lives there too.
 
 
 class ValidationResult(TypedDict, total=False):
@@ -73,10 +87,9 @@ ROOT = Path(__file__).parent
 TASKS_FILE = ROOT / "tasks" / "tasks.yaml"
 LOGS_DIR = ROOT / "logs"
 CHANGELOG = LOGS_DIR / "CHANGELOG.md"
-STATE_FILE = ROOT / ".roadmap_state.json"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
 TASKS_BACKUP = TASKS_FILE.with_suffix(".yaml.bak")
-STATE_LOCK = ROOT / ".roadmap_state.lock"  # sibling advisory lockfile; survives os.replace
+# STATE_FILE and STATE_LOCK are owned by rr_state.py and re-exported above.
 LOGS_DIR.mkdir(exist_ok=True)
 
 
@@ -88,8 +101,9 @@ MAX_TASK_ATTEMPTS = 5              # auto-block a task after this many resume cy
 TASKS_BACKUP_KEEP = 5              # number of rolling tasks.yaml.bak.N copies to retain
 LOG_ROTATE_BYTES = 10 * 1024 * 1024  # rotate when a log file exceeds 10 MB
 LOG_RETAIN_DAYS = 7                # delete rotated/compressed logs older than this
-STATE_SCHEMA_VERSION = 2           # bump when .roadmap_state.json format changes incompatibly
-                                   # v2 (ROAD-010): added session_iteration field; backward-compat via setdefault
+# STATE_SCHEMA_VERSION is owned by rr_state.py and re-exported above.
+# v2 (ROAD-010) adds the session_iteration field; older state files migrate
+# transparently via setdefault in rr_state.read_state.
 SNAPSHOT_SCHEMA_VERSION = 1        # bump when .context_snapshot.json format changes incompatibly
 
 # Built from two fragments so the sentinel string never appears literally in the source
@@ -493,126 +507,10 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
 
 
 # ── State management ──────────────────────────────────────────────────────────
-
-
-def write_state(
-    current_task_id: str | None,
-    iteration: int,
-    attempts: dict | None = None,
-    extra: dict | None = None,
-    session_iteration: int | None = None,
-) -> None:
-    """Persist roadmap state atomically.
-
-    `session_iteration` (ROAD-010): when None, preserve the value already on disk
-    (or default to 0 for a fresh state file). When set explicitly, overwrite.
-    This keeps existing call sites (cmd_start, cmd_complete, cmd_block, cmd_reset)
-    correct without threading the field through every signature — only the two
-    call sites that actually mutate the session counter (cmd_check_stop,
-    cmd_session_start) need to know about it.
-    """
-    if session_iteration is None:
-        existing = 0
-        if STATE_FILE.exists():
-            try:
-                data = json.loads(STATE_FILE.read_text())
-                if isinstance(data, dict):
-                    existing = int(data.get("session_iteration", 0))
-            except (OSError, json.JSONDecodeError, ValueError, TypeError):
-                existing = 0
-        effective_session_iter = existing
-    else:
-        effective_session_iter = session_iteration
-
-    state = {
-        "schema_version": STATE_SCHEMA_VERSION,
-        "current_task_id": current_task_id,
-        "iteration": iteration,
-        "session_iteration": effective_session_iter,
-        "attempts_per_task": attempts or {},
-        "updated_at": _now(),
-    }
-    if extra:
-        state.update(extra)
-    tmp_path = STATE_FILE.with_suffix(".json.tmp")
-    with open(tmp_path, "w") as f:
-        json.dump(state, f, indent=2, ensure_ascii=False)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(tmp_path, STATE_FILE)
-
-
-def read_state() -> RoadmapState:
-    default: RoadmapState = {
-        "current_task_id": None,
-        "iteration": 0,
-        "session_iteration": 0,
-        "attempts_per_task": {},
-    }
-    if not STATE_FILE.exists():
-        return default
-    try:
-        data = json.loads(STATE_FILE.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        # Corrupt or unreadable state must not wedge the loop; reconverge from defaults.
-        print(
-            f"[roadrunner] state file unreadable ({exc}); falling back to defaults.",
-            file=sys.stderr,
-        )
-        return default
-    if not isinstance(data, dict):
-        print(
-            "[roadrunner] state file is not a JSON object; falling back to defaults.",
-            file=sys.stderr,
-        )
-        return default
-    # Schema gate: missing version → legacy v1 (backward compatible). Newer version
-    # than we understand → exit immediately so the caller never overwrites the
-    # forward-compat state file. Operator fix: upgrade this tool or migrate state.
-    version = data.get("schema_version", 1)
-    if not isinstance(version, int) or version > STATE_SCHEMA_VERSION:
-        print(
-            f"[roadrunner] state file has unknown schema_version={version!r}; "
-            f"this version of roadrunner only understands up to {STATE_SCHEMA_VERSION}. "
-            f"Upgrade roadrunner or manually migrate {STATE_FILE.name} before continuing.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    data.setdefault("attempts_per_task", {})
-    data.setdefault("current_task_id", None)
-    data.setdefault("iteration", 0)
-    # ROAD-010: older state files (schema v1) lack this field. Treat as 0 so
-    # the first Stop-hook fire after upgrade starts a fresh session window.
-    data.setdefault("session_iteration", 0)
-    return cast(RoadmapState, data)
-
-
-def increment_attempts(state: RoadmapState, task_id: str) -> int:
-    attempts = state.get("attempts_per_task", {})
-    attempts[task_id] = attempts.get(task_id, 0) + 1
-    state["attempts_per_task"] = attempts
-    return attempts[task_id]
-
-
-@contextmanager
-def _exclusive_state_lock():
-    """POSIX advisory lock around the state file's read→modify→write window.
-
-    Uses a sibling lockfile so the lock object is not wiped by `os.replace` of the
-    state file itself. On Windows (where `fcntl` is unavailable) this degrades to
-    a no-op since the project only supports POSIX; multi-operator concurrency is
-    a documented non-goal but a single flock closes the accidental-concurrency hole.
-    """
-    if fcntl is None:
-        yield
-        return
-    STATE_LOCK.touch(exist_ok=True)
-    with open(STATE_LOCK, "r+") as f:
-        fcntl.flock(f.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+# write_state, read_state, increment_attempts, and _exclusive_state_lock are
+# owned by rr_state.py (Issue 5 extraction) and re-exported at the top of this
+# module. RoadmapState, STATE_FILE, STATE_LOCK, and STATE_SCHEMA_VERSION are
+# also re-exported. Public API is unchanged.
 
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -1133,6 +1031,20 @@ def cmd_health(args: argparse.Namespace) -> None:
     print(
         f"healthy — {len(done)}/{len(tasks)} done, {len(eligible)} eligible, {len(blocked)} blocked"
     )
+    last_session_line = rr_session.health_line()
+    if last_session_line:
+        print(last_session_line)
+
+
+def cmd_sessions(args: argparse.Namespace) -> None:
+    """Pretty-print recent finalized session summaries, newest-first."""
+    limit = int(args.last) if args.last else 10
+    summaries = rr_session.list_sessions(limit=limit)
+    if not summaries:
+        print("No finalized sessions yet.")
+        return
+    blocks = [rr_session.format_session(s) for s in summaries]
+    print("\n\n".join(blocks))
 
 
 # ── watch: live read-only monitor ─────────────────────────────────────────────
@@ -1218,7 +1130,7 @@ def _render_watch_frame(max_iter: int, now: datetime | None = None) -> str:
     except SystemExit:
         # read_state() exits on forward-incompat schema; surface and continue.
         lines.append(" state: unreadable (schema gate)")
-        state = {}  # type: ignore[assignment]
+        state = {}
     session_iter = state.get("session_iteration", 0) if isinstance(state, dict) else 0
     lifetime_iter = state.get("iteration", 0) if isinstance(state, dict) else 0
     attempts_map = state.get("attempts_per_task", {}) if isinstance(state, dict) else {}
@@ -1323,6 +1235,12 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
     # auto-block (5 attempts) are the real safety nets against runaway loops.
     hook_looping = bool(stdin_data.get("stop_hook_active"))
 
+    def _finalize_session_quiet() -> None:
+        try:
+            rr_session.finalize_current()
+        except OSError as exc:
+            print(f"[roadrunner] session finalize failed: {exc}", file=sys.stderr)
+
     # Serialize concurrent Stop-hook fires so the read→increment→write span in the
     # body below is atomic. SystemExit from any sys.exit() still releases the lock
     # via the context manager's finally.
@@ -1357,6 +1275,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
         )
 
         if session_iteration >= max_iter:
+            _finalize_session_quiet()
             print(
                 json.dumps(
                     {
@@ -1381,6 +1300,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
         # allow the stop. Otherwise we ignore the flag and keep driving — stalled
         # sessions still get caught by the iteration cap below.
         if hook_looping and not active_task(tasks) and not next_eligible_task(tasks):
+            _finalize_session_quiet()
             sys.exit(0)
 
         # Completion signal: Claude outputs ROADMAP_COMPLETE as the last non-empty line
@@ -1390,6 +1310,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
                 "complete",
                 notes="Roadmap finished — ROADMAP_COMPLETE signal received.",
             )
+            _finalize_session_quiet()
             sys.exit(0)
 
         # Resume in-progress task if Claude responded mid-task
@@ -1853,14 +1774,23 @@ def cmd_session_start(args: argparse.Namespace) -> None:
     if not tasks:
         return
 
-    state = read_state()
-    iteration = state.get("iteration", 0)  # lifetime (display only, not incremented here)
+    # Drop a session shell so finalize_current() has a boundary to replay
+    # against. open_session() also finalizes any prior open session, so a
+    # crashed previous run gets summarized here rather than left orphaned.
+    try:
+        rr_session.open_session()
+    except OSError as exc:
+        print(f"[roadrunner] session open failed: {exc}", file=sys.stderr)
 
     # ROAD-010: SessionStart is the boundary that resets the per-session iteration
     # counter. Persist the reset atomically so the first Stop-hook fire of the
     # new session sees session_iteration=0 → 1 rather than carrying over the
-    # previous run's count.
+    # previous run's count. The read MUST happen inside the lock — otherwise a
+    # concurrent check-stop fire between read and write can have its iteration
+    # / attempts_per_task updates rolled back by this snapshot.
     with _exclusive_state_lock():
+        state = read_state()
+        iteration = state.get("iteration", 0)  # lifetime (display only, not incremented here)
         write_state(
             state.get("current_task_id"),
             iteration,
@@ -1973,6 +1903,16 @@ def main() -> None:
         help="PostCompact hook entry: verify .context_snapshot.json after compaction",
     )
 
+    p_sessions = sub.add_parser(
+        "sessions",
+        help="Pretty-print recent session summaries (newest first).",
+    )
+    p_sessions.add_argument(
+        "--last",
+        default=None,
+        help="How many recent sessions to show (default: 10).",
+    )
+
     p_start = sub.add_parser("start")
     p_start.add_argument("task_id")
 
@@ -2070,6 +2010,7 @@ def main() -> None:
         "analyze": cmd_analyze,
         "commit": cmd_commit,
         "watch": cmd_watch,
+        "sessions": cmd_sessions,
     }
 
     if args.command not in dispatch:

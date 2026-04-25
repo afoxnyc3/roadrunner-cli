@@ -199,7 +199,8 @@ CHANGELOG.md                  <- release-facing changelog (per-task audit trail 
 docs/configuration.md         <- every tunable, every schema, env vars, state file layout
 docs/release.md               <- PyPI Trusted Publishing setup + per-release checklist
 docs/examples/                <- hello-roadrunner end-to-end worked example
-docs/adr/                     <- 10 ADRs documenting real decisions and fixes
+docs/adr/                     <- 11 ADRs documenting real decisions and fixes
+docs/hotfix-log.md            <- append-only ledger of observation-driven hotfixes
 ```
 
 ## Operator Commands
@@ -349,4 +350,5 @@ Signs you're hitting this: the Stop hook silently allows the loop to end, or `lo
 ## Design & Decisions
 
 - [DESIGN.md](DESIGN.md) — full architecture, data-file schema, hook contracts, risk areas.
-- [docs/adr/](docs/adr/) — ten ADRs documenting real defects found and fixes applied, from the line-anchored completion signal through hook-to-Python entry-point unification.
+- [docs/adr/](docs/adr/) — eleven ADRs documenting real defects found and fixes applied, from the line-anchored completion signal through the roadmap-vs-hotfix commit convention.
+- [docs/hotfix-log.md](docs/hotfix-log.md) — append-only ledger of observation-driven hotfixes (see [ADR-011](docs/adr/011-roadmap-vs-hotfix-commit-convention.md) for the convention).
