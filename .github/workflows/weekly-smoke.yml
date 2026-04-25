@@ -1,0 +1,50 @@
+name: weekly-smoke
+
+# Weekly regression guard for the cross-session state machine. The unit suite
+# can only catch behaviours observable within a single pytest invocation; this
+# workflow exercises tests/smoke/ which simulates SessionStart -> Stop boundaries
+# end-to-end. See docs/resolution-plan-2026-04-24.md, Issue 7.
+#
+# Cadence: Mondays 06:00 UTC (chosen over nightly because roadrunner-cli has
+# low code-churn outside feature bursts; daily would be noisy).
+#
+# Pinned to Node24-native action majors (Node20 deprecated 2026-06-02):
+#   actions/checkout@v5      — first Node24-native major
+#   actions/setup-python@v6  — first Node24-native major (v5.x is Node20)
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: smoke loop (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run smoke loop
+        run: pytest tests/smoke/ -v
+
+      - name: Report skip count
+        if: always()
+        run: |
+          echo "Skipped tests indicate features not yet on this branch."
+          pytest tests/smoke/ -v --tb=no -rs || true
