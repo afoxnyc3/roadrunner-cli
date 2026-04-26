@@ -2,8 +2,8 @@
 
 These shell scripts are wired up by `.claude/settings.json` and fire on
 Claude Code lifecycle events. Each one is a thin shim that re-invokes
-`roadrunner.py` with a specific subcommand. The full event contract lives
-in [`DESIGN.md` §2](../DESIGN.md).
+the `roadrunner` CLI with a specific subcommand. The full event contract
+lives in [`docs/architecture.md` §2](../docs/architecture.md).
 
 | Hook                      | Fires on                                | Purpose                                                                                                                  |
 | ------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
