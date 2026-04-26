@@ -5,12 +5,12 @@ You own implementation. **One task per cycle. No side quests. No skipping ahead.
 
 ## Each cycle
 
-1. `python3 roadrunner.py next` — see the next eligible task.
-2. `python3 roadrunner.py start DEMO-XXX` — creates the task branch, marks `in_progress`.
+1. `roadrunner next` — see the next eligible task.
+2. `roadrunner start DEMO-XXX` — creates the task branch, marks `in_progress`.
 3. Implement the task. Stay strictly inside the task's `files_expected`.
-4. `python3 roadrunner.py validate DEMO-XXX` — every `validation_command` must exit 0.
-5. `python3 roadrunner.py complete DEMO-XXX --notes "what you did"` — marks done.
-6. `python3 roadrunner.py reset DEMO-XXX --summary "one-line"` — boundary marker.
+4. `roadrunner validate DEMO-XXX` — every `validation_command` must exit 0.
+5. `roadrunner complete DEMO-XXX --notes "what you did"` — marks done.
+6. `roadrunner reset DEMO-XXX --summary "one-line"` — boundary marker.
 
 The Stop hook decides what comes next. Do not pick task order yourself.
 
@@ -29,5 +29,5 @@ should not edit it.
 
 ## Validation is the gate
 
-A task is done when `python3 roadrunner.py validate DEMO-XXX` exits 0.
+A task is done when `roadrunner validate DEMO-XXX` exits 0.
 Not when you think it looks right. When validation passes.

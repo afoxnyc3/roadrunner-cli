@@ -94,10 +94,10 @@ The `reset-iteration` subcommand provides manual control.
 
 ```bash
 # Reset session counter only. Lifetime counter preserved.
-python3 roadrunner.py reset-iteration --soft   # default if no flag
+roadrunner reset-iteration --soft   # default if no flag
 
 # Reset both counters. Destructive; loses lifetime audit trail.
-python3 roadrunner.py reset-iteration --hard
+roadrunner reset-iteration --hard
 ```
 
 Trace events (`reset_iteration`) record the mode and the prior lifetime counter

@@ -32,12 +32,12 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 ### 1.1 Control flow, step by step
 
 1. Claude Code starts with `CLAUDE.md` in scope. Agent reads its brief.
-2. Claude runs `python3 roadrunner.py next` to identify the current task.
-3. Claude runs `python3 roadrunner.py start TASK-XXX` — sets status to `in_progress`, records current task in state.
+2. Claude runs `roadrunner next` to identify the current task.
+3. Claude runs `roadrunner start TASK-XXX` — sets status to `in_progress`, records current task in state.
 4. Claude implements the task within the scope defined in `files_expected`.
-5. Claude runs `python3 roadrunner.py validate TASK-XXX` — executes all `validation_commands`, exits 0 or 1.
+5. Claude runs `roadrunner validate TASK-XXX` — executes all `validation_commands`, exits 0 or 1.
 6. If validation fails, Claude fixes and retries.
-7. Claude runs `python3 roadrunner.py complete TASK-XXX --notes "..."` — re-runs validation, sets status to `done` if passing, writes work log.
+7. Claude runs `roadrunner complete TASK-XXX --notes "..."` — re-runs validation, sets status to `done` if passing, writes work log.
 8. Claude finishes its response turn. Stop hook fires.
 9. Stop hook calls `roadrunner.py check-stop` via stdin pipe.
 10. `check-stop` increments the iteration counter, reads `tasks.yaml` and `.roadmap_state.json`.
@@ -370,7 +370,7 @@ mkdir -p tasks logs
 # Create your tasks/tasks.yaml
 # Create your CLAUDE.md (use roadrunner-cli/CLAUDE.md as template)
 pip3 install -r requirements.txt
-python3 roadrunner.py health
+roadrunner health
 ```
 
 ### 4.2 Smoke test hooks before first live run
@@ -386,10 +386,10 @@ echo '{"stop_hook_active": true}' | bash "$CLAUDE_PROJECT_DIR"/hooks/stop_hook.s
 printf '%s' '{"stop_hook_active": false, "last_assistant_message": "done\n\nROADMAP_COMPLETE"}' | bash "$CLAUDE_PROJECT_DIR"/hooks/stop_hook.sh; echo "exit: $?"
 
 # Snapshot
-python3 roadrunner.py snapshot && cat .context_snapshot.json
+roadrunner snapshot && cat .context_snapshot.json
 
 # Health
-python3 roadrunner.py health
+roadrunner health
 ```
 
 ### 4.3 Post-first-run verification

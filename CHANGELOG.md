@@ -10,6 +10,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Package layout** — moved the flat-module trio (`roadrunner.py`,
+  `rr_state.py`, `rr_session.py`) into a proper `src/roadrunner/` package
+  (`cli.py`, `state.py`, `session.py`) with `__init__.py` and
+  `__main__.py`. The `roadrunner` console script and `python -m roadrunner`
+  are the canonical entry points; the file-based fallback the hooks used
+  to honour (`python3 $PROJECT_ROOT/roadrunner.py`) is gone. `import
+  roadrunner; roadrunner.foo` and `monkeypatch.setattr(roadrunner, ...)`
+  continue to work via a `sys.modules` alias to the cli module so legacy
+  callers and tests are unaffected.
+- Path resolution — `ROOT` and `STATE_FILE`/`STATE_LOCK` now resolve from
+  `CLAUDE_PROJECT_DIR` (set by the hooks) with a `cwd()` fallback,
+  replacing the old `Path(__file__).parent` anchor that worked only when
+  the file lived at the project root.
+
 ## [1.0.0] - 2026-04-25
 
 ### Added
