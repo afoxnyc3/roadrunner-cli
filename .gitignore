@@ -5,6 +5,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.venv/
 
 # Packaging build artifacts
 build/
@@ -24,7 +25,7 @@ dist/
 .roadmap_state.json.tmp
 .roadmap_state.lock
 .context_snapshot.json
-.reset_TASK-*
+.reset_*
 logs/trace.jsonl
 logs/trace.jsonl.*
 logs/CHANGELOG.md.*
