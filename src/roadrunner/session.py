@@ -28,7 +28,7 @@ Design notes
     2. A crash mid-session leaves the shell behind; the next SessionStart
        finalizes it from whatever trace exists, then opens a fresh one.
 
-* Pure module: no import from ``roadrunner.py`` to avoid cycles. Path
+* Pure module: no import from ``cli`` to avoid cycles. Path
   constants are ``ROOT``-relative and rebindable in tests (same pattern as
   ``rr_state.STATE_FILE``).
 """
@@ -46,7 +46,9 @@ from typing import Any, TypedDict, cast
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-ROOT = Path(__file__).parent
+from .state import resolve_project_root
+
+ROOT = resolve_project_root()
 LOGS_DIR = ROOT / "logs"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
 SESSIONS_DIR = LOGS_DIR / "sessions"
@@ -333,7 +335,7 @@ def format_session(s: SessionSummary) -> str:
 
 def health_line() -> str | None:
     """One-line summary of the most recent finalized session, suitable for
-    ``roadrunner.py health`` output. Returns None if no finalized sessions
+    ``roadrunner health`` output. Returns None if no finalized sessions
     exist (don't pollute health output for fresh installs)."""
     last = list_sessions(limit=1)
     if not last:

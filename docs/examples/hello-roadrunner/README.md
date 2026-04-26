@@ -10,8 +10,8 @@ cp -r docs/examples/hello-roadrunner ~/hello-roadrunner
 cd ~/hello-roadrunner
 pip install roadrunner-cli
 roadrunner init .              # adds roadrunner.py + hooks/ + .claude/
-python3 roadrunner.py status   # DEMO-001/002/003 all `todo`
-python3 roadrunner.py analyze  # validates YAML + dep graph
+roadrunner status   # DEMO-001/002/003 all `todo`
+roadrunner analyze  # validates YAML + dep graph
 claude                         # launch the loop
 ```
 

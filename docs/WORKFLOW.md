@@ -43,7 +43,7 @@ flowchart TD
 
     subgraph E_["Stage E — Scaffold"]
         direction TB
-        E1[Copy roadrunner.py + hooks into target repo]
+        E1[pip install roadrunner-cli + roadrunner init in target repo]
         E2[Merge hook registrations<br/>into .claude/settings.json]
         E3[Gitignore runtime state files]
         E4[Move reviewed YAML<br/>→ tasks/tasks.yaml]
@@ -141,7 +141,7 @@ flowchart TD
     LintOK -->|yes| BlockCommit[Block stop<br/>Instructions:<br/>git add -A<br/>git commit -m<br/>roadrunner reset]
     LintOK -->|no| BlockLint[Block stop<br/>Surfaces lint output<br/>+ fix instructions]
 
-    Delegate[Delegate to<br/>python3 roadrunner.py check-stop] --> CSDecide{check-stop<br/>decision}
+    Delegate[Delegate to<br/>roadrunner check-stop] --> CSDecide{check-stop<br/>decision}
 
     CSDecide -->|iteration cap hit| HardHalt[Hard halt<br/>continue: false]
     CSDecide -->|task in_progress| ResumeBrief[Block<br/>inject resume brief]
@@ -259,12 +259,12 @@ flowchart LR
 
 | Task | Command |
 |---|---|
-| Check queue | `python3 roadrunner.py status` |
-| Next eligible | `python3 roadrunner.py next` |
-| Validate a tasks.yaml | `python3 roadrunner.py analyze [--tasks-file PATH]` |
-| Scaffold a new project | `python3 roadrunner.py init <dir> [--dry-run]` |
-| Health snapshot | `python3 roadrunner.py health` |
-| Unblock a task | Edit `status` back to `todo` in `tasks/tasks.yaml`, then `python3 roadrunner.py status` |
+| Check queue | `roadrunner status` |
+| Next eligible | `roadrunner next` |
+| Validate a tasks.yaml | `roadrunner analyze [--tasks-file PATH]` |
+| Scaffold a new project | `roadrunner init <dir> [--dry-run]` |
+| Health snapshot | `roadrunner health` |
+| Unblock a task | Edit `status` back to `todo` in `tasks/tasks.yaml`, then `roadrunner status` |
 
 ## 6. Related Docs
 

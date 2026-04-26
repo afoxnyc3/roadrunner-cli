@@ -19,11 +19,11 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 │  CLAUDE.md (brief)     │                  │              │
 │       │                │                  ▼              │
 │       ▼                │          write_context_snapshot │
-│  roadrunner.py next    │                                 │
-│  roadrunner.py start   │                                 │
+│  roadrunner next       │                                 │
+│  roadrunner start      │                                 │
 │  <implement task>      │                                 │
-│  roadrunner.py validate│                                 │
-│  roadrunner.py complete│                                 │
+│  roadrunner validate   │                                 │
+│  roadrunner complete   │                                 │
 │       │                │                                 │
 │       └────────────────┘                                 │
 └───────────────────────────────────────────────────────────┘
@@ -32,14 +32,14 @@ Roadrunner is a deterministic agentic loop. Python owns control flow. Claude own
 ### 1.1 Control flow, step by step
 
 1. Claude Code starts with `CLAUDE.md` in scope. Agent reads its brief.
-2. Claude runs `python3 roadrunner.py next` to identify the current task.
-3. Claude runs `python3 roadrunner.py start TASK-XXX` — sets status to `in_progress`, records current task in state.
+2. Claude runs `roadrunner next` to identify the current task.
+3. Claude runs `roadrunner start TASK-XXX` — sets status to `in_progress`, records current task in state.
 4. Claude implements the task within the scope defined in `files_expected`.
-5. Claude runs `python3 roadrunner.py validate TASK-XXX` — executes all `validation_commands`, exits 0 or 1.
+5. Claude runs `roadrunner validate TASK-XXX` — executes all `validation_commands`, exits 0 or 1.
 6. If validation fails, Claude fixes and retries.
-7. Claude runs `python3 roadrunner.py complete TASK-XXX --notes "..."` — re-runs validation, sets status to `done` if passing, writes work log.
+7. Claude runs `roadrunner complete TASK-XXX --notes "..."` — re-runs validation, sets status to `done` if passing, writes work log.
 8. Claude finishes its response turn. Stop hook fires.
-9. Stop hook calls `roadrunner.py check-stop` via stdin pipe.
+9. Stop hook calls `roadrunner check-stop` via stdin pipe.
 10. `check-stop` increments the iteration counter, reads `tasks.yaml` and `.roadmap_state.json`.
 11. If a task is `in_progress`: emits `{"decision": "block", "reason": "<resume brief>"}` — Claude resumes.
 12. If a new `todo` task is eligible: emits `{"decision": "block", "reason": "<task brief>"}` — Claude continues.
@@ -101,7 +101,7 @@ The hook emits `exit 0` plus no JSON in three cases: `stop_hook_active=true`, `R
 
 **Infinite loop guard:** If `stop_hook_active` is true in the input, exit 0 immediately. This prevents the hook from calling itself recursively.
 
-**Logic (delegated to `roadrunner.py check-stop`):**
+**Logic (delegated to `roadrunner check-stop`):**
 1. `stop_hook_active` → exit 0
 2. Increment iteration counter, check against max
 3. `ROADMAP_COMPLETE` on last non-empty line of last message → exit 0
@@ -133,14 +133,14 @@ The hook emits `exit 0` plus no JSON in three cases: `stop_hook_active=true`, `R
 **Exit codes:**
 - `exit 0` always — informational, never blocks.
 
-**Logic (delegated to `roadrunner.py session-start`):**
+**Logic (delegated to `roadrunner session-start`):**
 1. Check if `.context_snapshot.json` exists. If not, exit 0 silently.
 2. Parse snapshot, build a summary string from `current_task`, `next_eligible`, `iteration`, and `status_summary`.
 3. Emit JSON with `additionalContext` so Claude starts the session with roadmap awareness.
 
 **Note:** `additionalContext` is a supported output field for `SessionStart` hooks per Claude Code docs. This replaces the previous approach of emitting `additionalContext` from the PreCompact hook (which does not support that field).
 
-**Hook → Python delegation pattern:** Both `session_start_hook.sh` and `precompact_hook.sh` delegate to `roadrunner.py` subcommands (`session-start` and `snapshot`). There is no separate `_session_start.py` helper — Python entry points live in one file (ADR-010). The `.context_snapshot.json` schema carries a `schema_version` field (ADR-009) so a future format change is detectable at read time.
+**Hook → Python delegation pattern:** Both `session_start_hook.sh` and `precompact_hook.sh` delegate to `roadrunner` subcommands (`session-start` and `snapshot`). There is no separate `_session_start.py` helper — every CLI entry point lives in `roadrunner.cli` (ADR-010). The `.context_snapshot.json` schema carries a `schema_version` field (ADR-009) so a future format change is detectable at read time.
 
 ---
 
@@ -267,7 +267,7 @@ The hook emits `exit 0` plus no JSON in three cases: `stop_hook_active=true`, `R
 
 **Original risk:** Hook tried to extract roadmap task IDs from the `TaskCompleted` payload, but the payload uses Claude's internal `task_id`, not roadmap IDs.
 
-**Root cause (verified against docs):** `TaskCompleted` only fires on `TaskUpdate` tool calls (agent teams feature) or when a teammate finishes its turn. Roadrunner uses neither — it uses `roadrunner.py complete`. The hook never fired.
+**Root cause (verified against docs):** `TaskCompleted` only fires on `TaskUpdate` tool calls (agent teams feature) or when a teammate finishes its turn. Roadrunner uses neither — it uses `roadrunner complete`. The hook never fired.
 
 **Fix:** Removed the hook entirely (ADR-007). Validation gating is already handled by `cmd_complete` in Python, which re-runs `run_validation` before flipping status. Replaced with a `SessionStart` hook for context injection.
 
@@ -370,7 +370,7 @@ mkdir -p tasks logs
 # Create your tasks/tasks.yaml
 # Create your CLAUDE.md (use roadrunner-cli/CLAUDE.md as template)
 pip3 install -r requirements.txt
-python3 roadrunner.py health
+roadrunner health
 ```
 
 ### 4.2 Smoke test hooks before first live run
@@ -386,10 +386,10 @@ echo '{"stop_hook_active": true}' | bash "$CLAUDE_PROJECT_DIR"/hooks/stop_hook.s
 printf '%s' '{"stop_hook_active": false, "last_assistant_message": "done\n\nROADMAP_COMPLETE"}' | bash "$CLAUDE_PROJECT_DIR"/hooks/stop_hook.sh; echo "exit: $?"
 
 # Snapshot
-python3 roadrunner.py snapshot && cat .context_snapshot.json
+roadrunner snapshot && cat .context_snapshot.json
 
 # Health
-python3 roadrunner.py health
+roadrunner health
 ```
 
 ### 4.3 Post-first-run verification

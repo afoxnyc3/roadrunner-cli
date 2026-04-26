@@ -38,7 +38,7 @@ dev = [
 ]
 
 [project.scripts]
-roadrunner = "roadrunner:main"
+roadrunner = "roadrunner.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/afoxnyc3/roadrunner-cli"
@@ -47,7 +47,10 @@ Issues = "https://github.com/afoxnyc3/roadrunner-cli/issues"
 Changelog = "https://github.com/afoxnyc3/roadrunner-cli/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
-py-modules = ["roadrunner", "rr_state", "rr_session"]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.ruff]
 line-length = 140

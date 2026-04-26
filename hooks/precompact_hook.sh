@@ -11,12 +11,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-if [ -f "$PROJECT_ROOT/roadrunner.py" ]; then
-    RR=(python3 "$PROJECT_ROOT/roadrunner.py")
-elif command -v roadrunner >/dev/null 2>&1; then
+if command -v roadrunner >/dev/null 2>&1; then
     RR=(roadrunner)
+elif python3 -c "import roadrunner" >/dev/null 2>&1; then
+    RR=(python3 -m roadrunner)
+elif [ -d "$PROJECT_ROOT/src/roadrunner" ]; then
+    RR=(env "PYTHONPATH=$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m roadrunner)
 else
-    echo "[roadrunner] cannot find 'roadrunner' on PATH and no roadrunner.py in $PROJECT_ROOT" >&2
+    echo "[roadrunner] cannot import the 'roadrunner' package; PreCompact snapshot skipped" >&2
     exit 0
 fi
 

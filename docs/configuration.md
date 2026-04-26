@@ -6,7 +6,7 @@ files (`.roadmap_state.json` and `.context_snapshot.json`).
 
 ## Tunables
 
-All tunables live at the top of `roadrunner.py` so operators have a single
+All tunables live at the top of `src/roadrunner/cli.py` so operators have a single
 place to adjust retention and safety knobs. Change them in source — there is
 no runtime override for these (use the env var path documented below for the
 iteration cap).
@@ -41,8 +41,8 @@ anything else at load time.
 
 | Variable                 | Consumer                      | Effect                                                                           |
 | ------------------------ | ----------------------------- | -------------------------------------------------------------------------------- |
-| `ROADMAP_MAX_ITERATIONS` | `hooks/stop_hook.sh`          | Overrides the per-session iteration cap; passed to `roadrunner.py check-stop` as `--max-iterations`. Defaults to `100`. See "Runaway-Protection Cap" below. |
-| `CLAUDE_PROJECT_DIR`     | every hook script             | Set by Claude Code itself; hooks use it to locate `roadrunner.py`. You do not set this manually. |
+| `ROADMAP_MAX_ITERATIONS` | `hooks/stop_hook.sh`          | Overrides the per-session iteration cap; passed to `roadrunner check-stop` as `--max-iterations`. Defaults to `100`. See "Runaway-Protection Cap" below. |
+| `CLAUDE_PROJECT_DIR`     | every hook script + the CLI   | Set by Claude Code itself; the CLI uses it to anchor `ROOT` (and therefore `tasks.yaml`, `logs/`, `.roadmap_state.json`). You do not set this manually unless you're invoking the CLI from outside Claude Code. |
 
 ## Iteration Counters
 
@@ -82,7 +82,7 @@ export ROADMAP_MAX_ITERATIONS=50   # tighter cap for a short run
 ```
 
 The env var is read by `hooks/stop_hook.sh` and passed as `--max-iterations` to
-`roadrunner.py check-stop`. The CLI itself defaults to 100 if the flag is absent.
+`roadrunner check-stop`. The CLI itself defaults to 100 if the flag is absent.
 
 **When the cap fires:** `check-stop` emits a hard halt with `stopReason` explaining
 the cap was hit. The session terminates; Alex's next `claude` invocation starts
@@ -94,10 +94,10 @@ The `reset-iteration` subcommand provides manual control.
 
 ```bash
 # Reset session counter only. Lifetime counter preserved.
-python3 roadrunner.py reset-iteration --soft   # default if no flag
+roadrunner reset-iteration --soft   # default if no flag
 
 # Reset both counters. Destructive; loses lifetime audit trail.
-python3 roadrunner.py reset-iteration --hard
+roadrunner reset-iteration --hard
 ```
 
 Trace events (`reset_iteration`) record the mode and the prior lifetime counter

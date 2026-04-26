@@ -10,10 +10,9 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
 import roadrunner
-import rr_session
-import rr_state  # state persistence — extracted Issue 5; canonical home of STATE_FILE/STATE_LOCK
+from roadrunner import session as rr_session
+from roadrunner import state as rr_state  # state persistence — Issue 5; canonical home of STATE_FILE/STATE_LOCK
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
@@ -1555,7 +1554,7 @@ class TestSessionStart:
         data = json.loads(out)
         ctx = data["hookSpecificOutput"]["additionalContext"]
         assert data["hookSpecificOutput"]["hookEventName"] == "SessionStart"
-        assert "python3 roadrunner.py start TASK-002" in ctx
+        assert "roadrunner start TASK-002" in ctx
         # Should be directive, not passive status
         assert "Your first action" in ctx or "first action" in ctx.lower()
 
@@ -1666,11 +1665,16 @@ class TestWatch:
         criterion 'KeyboardInterrupt exits cleanly with exit code 0'."""
         import signal as _signal
         import time as _time
+        import os as _os
+        _src = str(Path(__file__).resolve().parent.parent / "src")
+        _env = {**_os.environ}
+        _env["PYTHONPATH"] = _src + (_os.pathsep + _env["PYTHONPATH"] if _env.get("PYTHONPATH") else "")
         proc = subprocess.Popen(
-            [sys.executable, "roadrunner.py", "watch", "--interval", "0.5"],
-            cwd=str(Path(roadrunner.__file__).parent),
+            [sys.executable, "-m", "roadrunner", "watch", "--interval", "0.5"],
+            cwd=str(Path(__file__).parent.parent),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=_env,
         )
         _time.sleep(2)
         proc.send_signal(_signal.SIGINT)

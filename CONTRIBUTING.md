@@ -3,7 +3,7 @@
 Thanks for the interest. Roadrunner is a small, opinionated control loop:
 Python owns task selection, validation, and state; Claude Code owns
 implementation inside a single task boundary. Contributions should respect that
-split — most changes land in `roadrunner.py`, a hook script, or documentation.
+split — most changes land in `src/roadrunner/cli.py`, a hook script, or documentation.
 
 If you are unsure whether a change fits, open an issue before writing code.
 
@@ -70,18 +70,18 @@ pytest tests/test_roadrunner.py::TestStart::test_creates_branch -v
 ## Running lint
 
 ```bash
-ruff check roadrunner.py tests/ hooks/
+ruff check src/ tests/ hooks/
 ```
 
 Ruff config lives in `pyproject.toml` (`[tool.ruff]`). Line length is **140**;
 the rule selection is intentionally narrow (`E`, `F`, `W`). Type checking with
-mypy is also configured — run `mypy roadrunner.py` if you touch a non-trivial
+mypy is also configured — run `mypy src` if you touch a non-trivial
 type boundary.
 
 Auto-format is opt-in:
 
 ```bash
-ruff format roadrunner.py tests/ hooks/
+ruff format src/ tests/ hooks/
 ```
 
 ---
@@ -92,7 +92,7 @@ ruff format roadrunner.py tests/ hooks/
 just ci
 ```
 
-That shells out to `pytest tests/ -v && ruff check roadrunner.py hooks/ tests/`.
+That shells out to `pytest tests/ -v && ruff check src/ hooks/ tests/`.
 It is the same gate CI runs. If `just ci` is green, your PR is ready.
 
 For ad-hoc combos, the justfile also has `just test`, `just lint`, `just
@@ -104,7 +104,7 @@ status`, `just health`, `just snapshot`.
 
 ### Branch naming
 
-Task branches are auto-created by `python3 roadrunner.py start <TASK-ID>` and
+Task branches are auto-created by `roadrunner start <TASK-ID>` and
 follow the pattern `roadrunner/<TASK-ID>`. For changes outside the roadmap
 loop (e.g., a doc fix), use a descriptive prefix: `docs/…`, `fix/…`,
 `refactor/…`, `chore/…`.
@@ -112,13 +112,13 @@ loop (e.g., a doc fix), use a descriptive prefix: `docs/…`, `fix/…`,
 ### Commit style
 
 Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
-`test:`). The built-in `python3 roadrunner.py commit <TASK-ID>` subcommand
+`test:`). The built-in `roadrunner commit <TASK-ID>` subcommand
 generates conventional messages automatically and scopes the commit to
 `files_expected` + the roadrunner overlay — use it when landing a task.
 
 ### What reviewers look for
 
-1. **Validation commands pass.** `python3 roadrunner.py validate <TASK-ID>`
+1. **Validation commands pass.** `roadrunner validate <TASK-ID>`
    must exit 0. A passing validator is the gate; reviewer taste is the
    sanity check layered on top.
 2. **Scope discipline.** Only files in the task's `files_expected` (+ roadmap
@@ -137,7 +137,7 @@ generates conventional messages automatically and scopes the commit to
 
 ## How to add a new roadrunner subcommand
 
-Every subcommand is a two-step change in `roadrunner.py`:
+Every subcommand is a two-step change in `src/roadrunner/cli.py`:
 
 1. **Write the handler.** Add `def cmd_<name>(args: argparse.Namespace) -> None`
    somewhere in the CLI commands section.
@@ -184,7 +184,7 @@ convention is:
    SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
    PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-   python3 "$PROJECT_ROOT/roadrunner.py" my-subcommand
+   roadrunner my-subcommand
    ```
 
    - `set -euo pipefail` always.
@@ -211,7 +211,7 @@ convention is:
 
 3. **Make it executable:** `chmod +x hooks/myhook.sh` (or `just hooks`).
 
-4. **Add a handler in `roadrunner.py`** (see subcommand recipe above) and
+4. **Add a handler in `src/roadrunner/cli.py`** (see subcommand recipe above) and
    test both layers: unit-test the Python subcommand, integration-test the
    bash wrapper by piping a mock payload through it and asserting exit code
    + trace event.
@@ -233,7 +233,7 @@ Claude Code hooks reference.
 
 ## File layout
 
-- `roadrunner.py` — single-file control loop. Pure stdlib + PyYAML.
+- `src/roadrunner/` — control loop package: `cli.py` (commands), `state.py` (atomic state I/O), `session.py` (session summaries). Pure stdlib + PyYAML.
 - `hooks/*.sh` — thin bash wrappers that delegate to Python.
 - `.claude/settings.json` — hook registration + permission allowlist.
 - `tasks/tasks.yaml` — the roadmap; source of truth for task ordering.
