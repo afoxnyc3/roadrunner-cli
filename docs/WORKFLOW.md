@@ -43,7 +43,7 @@ flowchart TD
 
     subgraph E_["Stage E — Scaffold"]
         direction TB
-        E1[Copy roadrunner.py + hooks into target repo]
+        E1[pip install roadrunner-cli + roadrunner init in target repo]
         E2[Merge hook registrations<br/>into .claude/settings.json]
         E3[Gitignore runtime state files]
         E4[Move reviewed YAML<br/>→ tasks/tasks.yaml]

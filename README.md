@@ -208,7 +208,9 @@ docs/hotfix-log.md            <- append-only ledger of observation-driven hotfix
 ## Operator Commands
 
 After `pip install roadrunner-cli` the `roadrunner` console script is on
-your PATH. From source, swap `roadrunner` for `roadrunner`.
+your PATH. From a source checkout without an install, swap `roadrunner`
+for `python -m roadrunner` (or run `pip install -e .` first and use the
+console script).
 
 ```bash
 # Project lifecycle

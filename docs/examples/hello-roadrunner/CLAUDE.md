@@ -16,7 +16,7 @@ The Stop hook decides what comes next. Do not pick task order yourself.
 
 ## Completion signal
 
-When all three tasks are `done` and `roadrunner.py next` reports nothing
+When all three tasks are `done` and `roadrunner next` reports nothing
 eligible, output the sentinel `ROADMAP_COMPLETE` on its own line as the
 last non-empty line of your message. This halts the loop cleanly.
 

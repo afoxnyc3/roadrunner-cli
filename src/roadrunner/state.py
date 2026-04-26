@@ -1,22 +1,22 @@
-"""Roadrunner state persistence — extracted from ``roadrunner.py``.
+"""Roadrunner state persistence.
 
 Owns the read/modify/write window around the on-disk roadmap state file.
 The highest-risk section of the codebase: a bug here silently corrupts the
 control loop. Kept narrow on purpose so the blast radius is bounded.
 
-Public surface (re-exported from ``roadrunner.py`` for backward compat):
+Public surface (re-exported from ``roadrunner.cli`` for backward compat,
+and reachable as ``roadrunner.STATE_FILE`` etc. via the package alias):
 
 - ``RoadmapState`` (TypedDict)
 - ``STATE_SCHEMA_VERSION`` (int)
 - ``STATE_FILE`` / ``STATE_LOCK`` (Path)
 - ``write_state(...)``, ``read_state()``, ``increment_attempts(state, task_id)``
 - ``_exclusive_state_lock()`` context manager
+- ``resolve_project_root()`` — shared helper for ROOT/STATE_FILE anchoring
 
 Locking, atomic writes, schema-version gating, and corrupt-file fallbacks
-are bit-identical to the pre-extraction implementation. This module is a
-pure refactor, not a redesign — see ``docs/resolution-plan-2026-04-24.md``
-Issue 5. The state module deliberately does not import from
-``roadrunner.py`` to avoid an import cycle.
+are bit-identical to the pre-extraction implementation. This module
+deliberately does not import from ``cli`` to avoid an import cycle.
 """
 
 from __future__ import annotations
@@ -48,11 +48,54 @@ class RoadmapState(TypedDict, total=False):
 
 
 # ── Paths and version ──────────────────────────────────────────────────────
-# Defined at the project root, mirroring the original layout in ``roadrunner.py``.
-# Tests rebind these module-level names (see ``tests/test_roadrunner.py::tmp_project``)
-# to redirect state I/O into ``tmp_path``; that pattern is preserved.
+# Anchored at the resolved project root (CLAUDE_PROJECT_DIR / walk-up / cwd).
+# Tests rebind these module-level names (see
+# ``tests/test_roadrunner.py::tmp_project``) to redirect state I/O into
+# ``tmp_path``; that pattern is preserved.
 
-_PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+_unanchored_warning_emitted = False
+
+
+def resolve_project_root() -> Path:
+    """Locate the project root for state and log file resolution.
+
+    Resolution order (most authoritative first):
+
+    1. ``CLAUDE_PROJECT_DIR`` environment variable — set by Claude Code's
+       hook runtime, so any hook-driven invocation gets the exact directory
+       the user is operating on.
+    2. Walk up from ``Path.cwd()`` looking for a project marker (a
+       ``tasks/`` directory or an existing ``.roadmap_state.json`` file).
+       The first ancestor with a marker is returned. Lets a user run
+       ``roadrunner status`` from a subdirectory of their project and
+       still hit the right state file.
+    3. Plain ``Path.cwd()``. Emits a one-line stderr warning the first
+       time this branch is hit so the accidental "I ran this from the
+       wrong place" case is visible instead of silently writing state into
+       an unrelated tree — which is what the old ``Path(__file__).parent``
+       anchor used to prevent. Subsequent calls in the same process stay
+       quiet (cli, session, and state each invoke this at import time).
+    """
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return Path(env)
+    cwd = Path.cwd()
+    for candidate in (cwd, *cwd.parents):
+        if (candidate / "tasks").is_dir() or (candidate / ".roadmap_state.json").is_file():
+            return candidate
+    global _unanchored_warning_emitted
+    if not _unanchored_warning_emitted:
+        sys.stderr.write(
+            "[roadrunner] CLAUDE_PROJECT_DIR is unset and no tasks/ or "
+            f".roadmap_state.json marker was found walking up from {cwd}; "
+            "using cwd as the project root. Set CLAUDE_PROJECT_DIR or run "
+            "from a project directory to silence this warning.\n"
+        )
+        _unanchored_warning_emitted = True
+    return cwd
+
+
+_PROJECT_ROOT = resolve_project_root()
 STATE_FILE: Path = _PROJECT_ROOT / ".roadmap_state.json"
 STATE_LOCK: Path = _PROJECT_ROOT / ".roadmap_state.lock"  # sibling lockfile; survives os.replace
 

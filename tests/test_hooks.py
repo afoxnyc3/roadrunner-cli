@@ -184,10 +184,16 @@ class TestCrashRecoveryMidTask:
         # to be copied. ``cwd=tmp_path`` makes ROOT resolve to the tmp tree.
         self._write_min_project(tmp_path)
 
+        # Forward src/ on PYTHONPATH so ``python -m roadrunner`` resolves in
+        # fresh-clone-no-install runs (mirrors the contract of conftest.py).
+        _src = str(Path(__file__).resolve().parent.parent / "src")
+        _env = {**os.environ}
+        _env["PYTHONPATH"] = _src + (os.pathsep + _env["PYTHONPATH"] if _env.get("PYTHONPATH") else "")
+
         # Step 1: start the task in one subprocess (simulating one loop iteration)
         start = subprocess.run(
             [sys.executable, "-m", "roadrunner", "start", "TASK-001"],
-            cwd=str(tmp_path), capture_output=True, text=True,
+            cwd=str(tmp_path), capture_output=True, text=True, env=_env,
         )
         assert start.returncode == 0, start.stderr
 
@@ -202,7 +208,7 @@ class TestCrashRecoveryMidTask:
         payload = json.dumps({"stop_hook_active": False, "last_assistant_message": "mid-work"})
         resume = subprocess.run(
             [sys.executable, "-m", "roadrunner", "check-stop", "--max-iterations", "50"],
-            cwd=str(tmp_path), input=payload, capture_output=True, text=True,
+            cwd=str(tmp_path), input=payload, capture_output=True, text=True, env=_env,
         )
         assert resume.returncode == 0, resume.stderr
         decision = json.loads(resume.stdout)

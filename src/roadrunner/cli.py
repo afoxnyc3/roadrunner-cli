@@ -30,6 +30,7 @@ from . import session as rr_session  # session summary observability (Issue 6)
 # schema versioning) has its own blast radius. See Issue 5 of the 2026-04-24
 # resolution plan. The names below are re-exported so the public
 # ``roadrunner`` import surface is unchanged.
+from .state import resolve_project_root
 from .state import (  # noqa: F401 — re-exports
     STATE_FILE,
     STATE_LOCK,
@@ -83,14 +84,22 @@ class ValidationResult(TypedDict, total=False):
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+ROOT = resolve_project_root()
 TASKS_FILE = ROOT / "tasks" / "tasks.yaml"
 LOGS_DIR = ROOT / "logs"
 CHANGELOG = LOGS_DIR / "CHANGELOG.md"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
 TASKS_BACKUP = TASKS_FILE.with_suffix(".yaml.bak")
-# STATE_FILE and STATE_LOCK are owned by rr_state.py and re-exported above.
-LOGS_DIR.mkdir(exist_ok=True)
+# STATE_FILE and STATE_LOCK are owned by state.py and re-exported above.
+try:
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+except OSError:
+    # ROOT may be a non-existent path at import time (CLAUDE_PROJECT_DIR
+    # pointing somewhere stale, or cwd-fallback in an unwritable dir).
+    # Commands that actually write logs will surface a clearer error at
+    # call time instead of taking down ``import roadrunner`` for callers
+    # that just want to inspect the package.
+    pass
 
 
 # ── Tunables ─────────────────────────────────────────────────────────────────
@@ -1566,10 +1575,23 @@ def _init_plan(target: Path, source: Path) -> list[tuple[str, Path, Path | None,
     return plan
 
 
+def _find_template_source() -> Path:
+    """Locate the directory shipping init scaffold templates (hooks/, .claude/).
+
+    Climbs from ``src/roadrunner/cli.py`` to the package source root that
+    sits next to ``hooks/`` and ``.claude/`` in a development checkout.
+    For pip-installed wheels the returned path is ``site-packages`` and
+    won't contain those template dirs; ``_init_plan`` checks each
+    template's existence before adding it to the plan, so the bare
+    scaffold (tasks/, logs/, CLAUDE.md) still drops in cleanly.
+    """
+    return Path(__file__).resolve().parent.parent.parent
+
+
 def cmd_init(args: argparse.Namespace) -> None:
     raw_target = args.target_dir
     target = Path.cwd() if raw_target == "." else Path(raw_target).expanduser().resolve()
-    source = ROOT
+    source = _find_template_source()
     dry_run = bool(getattr(args, "dry_run", False))
 
     prefix = "[dry-run] " if dry_run else ""
