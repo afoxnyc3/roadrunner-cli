@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-04-25
+
 ### Added
 
 - **`roadrunner watch`** — read-only live monitor that polls disk state on a
@@ -61,3 +63,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Initial development. See `git log` for full history before the changelog
 was started.
+
+[Unreleased]: https://github.com/afoxnyc3/roadrunner-cli/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/afoxnyc3/roadrunner-cli/releases/tag/v1.0.0

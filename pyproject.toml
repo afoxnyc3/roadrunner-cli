@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "roadrunner-cli"
-version = "0.1.0"
+version = "1.0.0"
 description = "Deterministic agentic loop controller for Claude Code — Python owns the roadmap, Claude owns the implementation."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,10 +12,11 @@ license = { text = "MIT" }
 authors = [{ name = "Alex Fox", email = "afoxnyc@icloud.com" }]
 keywords = ["claude-code", "agentic", "roadmap", "automation", "cli"]
 classifiers = [
-    "Development Status :: 4 - Beta",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX",
+    "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
@@ -43,6 +44,7 @@ roadrunner = "roadrunner:main"
 Homepage = "https://github.com/afoxnyc3/roadrunner-cli"
 Repository = "https://github.com/afoxnyc3/roadrunner-cli"
 Issues = "https://github.com/afoxnyc3/roadrunner-cli/issues"
+Changelog = "https://github.com/afoxnyc3/roadrunner-cli/blob/main/CHANGELOG.md"
 
 [tool.setuptools]
 py-modules = ["roadrunner", "rr_state", "rr_session"]
