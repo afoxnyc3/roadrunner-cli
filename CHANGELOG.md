@@ -10,6 +10,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- **`requirements.txt`** — deleted the four-line backward-compat shim
+  (`-e .[dev]`). All install instructions now point directly to
+  `pip install -e .[dev]` (full dev setup) or `pip install -e .` (runtime
+  only). CI workflows updated to use `cache-dependency-path: pyproject.toml`.
+
 ### Changed
 
 - **Documentation layout** — `DESIGN.md` moved to `docs/architecture.md`.

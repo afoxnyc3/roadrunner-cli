@@ -14,8 +14,6 @@ If you are unsure whether a change fits, open an issue before writing code.
 Roadrunner targets Python **3.10+** on POSIX (macOS and Linux). Windows is
 not a supported platform.
 
-### Option 1 — pip editable install (recommended)
-
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
@@ -23,15 +21,6 @@ pip install -e '.[dev]'
 ```
 
 `-e` gives you an editable checkout; `[dev]` installs `pytest` and `ruff`.
-
-### Option 2 — requirements.txt (runtime only)
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install pytest ruff        # dev tools not pinned in requirements.txt
-```
 
 ### Making the hooks executable
 
