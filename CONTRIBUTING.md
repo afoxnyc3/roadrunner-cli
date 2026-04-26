@@ -246,5 +246,5 @@ Claude Code hooks reference.
 ## Getting help
 
 File an issue at <https://github.com/afoxnyc3/roadrunner-cli/issues>. For
-design questions, read `DESIGN.md` and `docs/WORKFLOW.md` first — most
+design questions, read `docs/architecture.md` and `docs/WORKFLOW.md` first — most
 architectural decisions are recorded there or in `docs/adr/`.

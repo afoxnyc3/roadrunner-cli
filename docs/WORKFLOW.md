@@ -269,5 +269,5 @@ flowchart LR
 ## 6. Related Docs
 
 - [CLAUDE.md](../CLAUDE.md) — operating contract the agent follows
-- [DESIGN.md](../DESIGN.md) — architectural rationale
+- [architecture.md](architecture.md) — architectural rationale
 - [docs/adr/](./adr/) — accepted decisions (ADR-001 through ADR-010)

@@ -12,6 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Documentation layout** — `DESIGN.md` moved to `docs/architecture.md`.
+  Reduces the root file count and groups architectural reference
+  material with the rest of the design docs (ADRs, configuration,
+  workflow). Active links in `README.md`, `CONTRIBUTING.md`,
+  `docs/WORKFLOW.md`, and `hooks/README.md` updated. Historical files
+  (ADR-009, code-review-audit, architecture-review) keep their original
+  references as frozen records.
 - **Package layout** — moved the flat-module trio (`roadrunner.py`,
   `rr_state.py`, `rr_session.py`) into a proper `src/roadrunner/` package
   (`cli.py`, `state.py`, `session.py`) with `__init__.py` and

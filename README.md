@@ -195,7 +195,7 @@ hooks/precompact_hook.sh      <- context snapshot: delegates to `roadrunner snap
 hooks/postcompact_hook.sh     <- snapshot verification: delegates to `roadrunner post-compact`
 hooks/post_write_hook.sh      <- lint feedback: ruff on .py, yaml parse on .yaml
 CLAUDE.md                     <- agent brief: operating contract for Claude Code
-DESIGN.md                     <- full design + ADR index
+docs/architecture.md          <- full design + ADR index
 CONTRIBUTING.md               <- dev setup, PR workflow, recipes for new commands and hooks
 CHANGELOG.md                  <- release-facing changelog (per-task audit trail in logs/CHANGELOG.md)
 docs/configuration.md         <- every tunable, every schema, env vars, state file layout
@@ -322,13 +322,13 @@ That writes `tasks/tasks.yaml`, `hooks/`, `.claude/settings.json`, and a
 starter `CLAUDE.md` into `my-other-project/`. Edit the tasks file to
 describe your work and you're ready to launch `claude`. See
 [`docs/examples/hello-roadrunner/`](docs/examples/hello-roadrunner/) for
-a complete worked example, [DESIGN.md](DESIGN.md) for architecture and the
+a complete worked example, [docs/architecture.md](docs/architecture.md) for architecture and the
 ADR index, and [docs/configuration.md](docs/configuration.md) for every
 tunable.
 
 ## Trust Boundary
 
-`tasks.yaml` is executable configuration — `validation_commands` run via `shell=True` with your full privileges. Treat it like a Makefile: only commit tasks whose shell commands you would type yourself. Subprocess timeouts (default 300 s, tunable per task) remove the hanging-command failure mode. The full trust model is documented in [DESIGN.md](DESIGN.md).
+`tasks.yaml` is executable configuration — `validation_commands` run via `shell=True` with your full privileges. Treat it like a Makefile: only commit tasks whose shell commands you would type yourself. Subprocess timeouts (default 300 s, tunable per task) remove the hanging-command failure mode. The full trust model is documented in [docs/architecture.md](docs/architecture.md).
 
 ## Troubleshooting
 
@@ -353,6 +353,6 @@ Signs you're hitting this: the Stop hook silently allows the loop to end, or `lo
 
 ## Design & Decisions
 
-- [DESIGN.md](DESIGN.md) — full architecture, data-file schema, hook contracts, risk areas.
+- [docs/architecture.md](docs/architecture.md) — full architecture, data-file schema, hook contracts, risk areas.
 - [docs/adr/](docs/adr/) — eleven ADRs documenting real defects found and fixes applied, from the line-anchored completion signal through the roadmap-vs-hotfix commit convention.
 - [docs/hotfix-log.md](docs/hotfix-log.md) — append-only ledger of observation-driven hotfixes (see [ADR-011](docs/adr/011-roadmap-vs-hotfix-commit-convention.md) for the convention).
