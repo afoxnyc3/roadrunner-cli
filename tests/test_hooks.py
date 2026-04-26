@@ -73,17 +73,13 @@ class TestSessionStartHook:
 
     def test_without_snapshot(self, tmp_path):
         """When snapshot is absent, hook exits 0 silently."""
-        # Stage a minimal project tree: hook + roadrunner.py + tasks dir.
-        # The bash hook delegates to `python3 $PROJECT_ROOT/roadrunner.py
-        # session-start` which must resolve against the tmp root so we copy
-        # both files.
+        # Stage a minimal project tree. The bash hook delegates to
+        # ``python -m roadrunner session-start`` which resolves against the
+        # installed package, so the tmp root only needs hooks + tasks.
         import shutil
         hooks_dir = tmp_path / "hooks"
         hooks_dir.mkdir()
         shutil.copy2(HOOKS_DIR / "session_start_hook.sh", hooks_dir / "session_start_hook.sh")
-        shutil.copy2(PROJECT_ROOT / "roadrunner.py", tmp_path / "roadrunner.py")
-        shutil.copy2(PROJECT_ROOT / "rr_state.py", tmp_path / "rr_state.py")
-        shutil.copy2(PROJECT_ROOT / "rr_session.py", tmp_path / "rr_session.py")
         (tmp_path / "tasks").mkdir()
         (tmp_path / "tasks" / "tasks.yaml").write_text("tasks: []\n")
         result = subprocess.run(
@@ -117,7 +113,7 @@ class TestPreCompactHook:
 class TestPostWriteHook:
     def test_python_file_runs_ruff(self):
         """Payload with a .py file should trigger ruff (if available)."""
-        payload = {"tool_input": {"file_path": str(PROJECT_ROOT / "roadrunner.py")}}
+        payload = {"tool_input": {"file_path": str(PROJECT_ROOT / "src" / "roadrunner" / "cli.py")}}
         result = run_hook("post_write_hook.sh", payload)
         assert result.returncode == 0
 
@@ -180,20 +176,17 @@ class TestCrashRecoveryMidTask:
             _yaml.dump(tasks, f)
 
     def test_start_then_crash_then_check_stop_resumes(self, tmp_path):
-        import shutil
+        import sys
         import yaml as _yaml
 
-        # Stage an isolated project tree with a copy of roadrunner.py
-        # plus its extracted state module (rr_state.py) and the
-        # session-summary module (Issue 6).
+        # Stage an isolated project tree. The cli is invoked through the
+        # installed package (``python -m roadrunner``); no source files need
+        # to be copied. ``cwd=tmp_path`` makes ROOT resolve to the tmp tree.
         self._write_min_project(tmp_path)
-        shutil.copy2(PROJECT_ROOT / "roadrunner.py", tmp_path / "roadrunner.py")
-        shutil.copy2(PROJECT_ROOT / "rr_state.py", tmp_path / "rr_state.py")
-        shutil.copy2(PROJECT_ROOT / "rr_session.py", tmp_path / "rr_session.py")
 
         # Step 1: start the task in one subprocess (simulating one loop iteration)
         start = subprocess.run(
-            ["python3", "roadrunner.py", "start", "TASK-001"],
+            [sys.executable, "-m", "roadrunner", "start", "TASK-001"],
             cwd=str(tmp_path), capture_output=True, text=True,
         )
         assert start.returncode == 0, start.stderr
@@ -208,7 +201,7 @@ class TestCrashRecoveryMidTask:
         # Step 3: next loop iteration fires the Stop hook → check-stop must resume.
         payload = json.dumps({"stop_hook_active": False, "last_assistant_message": "mid-work"})
         resume = subprocess.run(
-            ["python3", "roadrunner.py", "check-stop", "--max-iterations", "50"],
+            [sys.executable, "-m", "roadrunner", "check-stop", "--max-iterations", "50"],
             cwd=str(tmp_path), input=payload, capture_output=True, text=True,
         )
         assert resume.returncode == 0, resume.stderr

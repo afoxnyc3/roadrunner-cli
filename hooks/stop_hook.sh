@@ -26,14 +26,19 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 MAX_ITERATIONS="${ROADMAP_MAX_ITERATIONS:-100}"  # ROAD-010: session cap (was 50 lifetime)
 
-# Prefer the local roadrunner.py if present (source/dev checkouts), else the
-# installed `roadrunner` console script (pip install roadrunner-cli).
-if [ -f "$PROJECT_ROOT/roadrunner.py" ]; then
-    RR=(python3 "$PROJECT_ROOT/roadrunner.py")
-elif command -v roadrunner >/dev/null 2>&1; then
+# Resolve a working roadrunner invocation:
+#   1. installed `roadrunner` console script (pip install roadrunner-cli)
+#   2. `python3 -m roadrunner` (covers editable installs and source checkouts
+#      where `pip install -e .` has been run)
+#   3. PYTHONPATH-injected source layout (fresh source checkout, no install)
+if command -v roadrunner >/dev/null 2>&1; then
     RR=(roadrunner)
+elif python3 -c "import roadrunner" >/dev/null 2>&1; then
+    RR=(python3 -m roadrunner)
+elif [ -d "$PROJECT_ROOT/src/roadrunner" ]; then
+    RR=(env "PYTHONPATH=$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m roadrunner)
 else
-    echo "[roadrunner] cannot find 'roadrunner' on PATH and no roadrunner.py in $PROJECT_ROOT" >&2
+    echo "[roadrunner] cannot import the 'roadrunner' package; install with 'pip install roadrunner-cli' or 'pip install -e .'" >&2
     exit 1
 fi
 

@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
-import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-import rr_session
+from roadrunner import session as rr_session
 
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────

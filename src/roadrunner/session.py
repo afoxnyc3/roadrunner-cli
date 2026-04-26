@@ -46,7 +46,7 @@ from typing import Any, TypedDict, cast
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-ROOT = Path(__file__).parent
+ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
 LOGS_DIR = ROOT / "logs"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
 SESSIONS_DIR = LOGS_DIR / "sessions"

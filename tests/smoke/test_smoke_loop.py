@@ -21,19 +21,14 @@ import inspect
 import io
 import json
 import shutil
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-# Make the project root importable regardless of how pytest is invoked.
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_PROJECT_ROOT))
-
-import roadrunner  # noqa: E402
-import rr_session  # noqa: E402
-import rr_state  # noqa: E402
+import roadrunner
+from roadrunner import session as rr_session
+from roadrunner import state as rr_state
 
 _TOY_ROADMAP = Path(__file__).parent / "toy-roadmap"
 
@@ -55,11 +50,11 @@ def _road010_present() -> bool:
          the gated tests use this kwarg to seed state, so its presence is
          the actual prerequisite for those tests to run.
     """
-    annotations = getattr(roadrunner.RoadmapState, "__annotations__", {})
+    annotations = getattr(roadrunner.RoadmapState, "__annotations__", {})  # type: ignore[attr-defined]
     if "session_iteration" in annotations:
         return True
     try:
-        sig = inspect.signature(roadrunner.write_state)
+        sig = inspect.signature(roadrunner.write_state)  # type: ignore[attr-defined]
     except (TypeError, ValueError):
         return False
     return "session_iteration" in sig.parameters

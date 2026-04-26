@@ -23,14 +23,14 @@ from typing import Any, TypedDict, cast
 
 import yaml
 
-import rr_session  # session summary observability (Issue 6)
+from . import session as rr_session  # session summary observability (Issue 6)
 
 # State persistence lives in rr_state.py — extracted as a bounded module so
 # the highest-risk section of the loop (atomic writes, advisory locking,
 # schema versioning) has its own blast radius. See Issue 5 of the 2026-04-24
 # resolution plan. The names below are re-exported so the public
 # ``roadrunner`` import surface is unchanged.
-from rr_state import (  # noqa: F401 — re-exports
+from .state import (  # noqa: F401 — re-exports
     STATE_FILE,
     STATE_LOCK,
     STATE_SCHEMA_VERSION,
@@ -83,7 +83,7 @@ class ValidationResult(TypedDict, total=False):
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
-ROOT = Path(__file__).parent
+ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
 TASKS_FILE = ROOT / "tasks" / "tasks.yaml"
 LOGS_DIR = ROOT / "logs"
 CHANGELOG = LOGS_DIR / "CHANGELOG.md"
@@ -1503,20 +1503,20 @@ implementation. One task per cycle. No side quests. No skipping ahead.
 
 ## Each cycle
 
-1. `python3 roadrunner.py next` — shows the next eligible task
-2. `python3 roadrunner.py start TASK-XXX` — creates `roadrunner/TASK-XXX` from
+1. `roadrunner next` — shows the next eligible task
+2. `roadrunner start TASK-XXX` — creates `roadrunner/TASK-XXX` from
    the project base and switches to it
 3. Implement, staying strictly inside the task's `files_expected`
-4. `python3 roadrunner.py validate TASK-XXX` — run every validation command;
+4. `roadrunner validate TASK-XXX` — run every validation command;
    they must all exit 0
-5. `python3 roadrunner.py complete TASK-XXX --notes "what you did"` — marks
+5. `roadrunner complete TASK-XXX --notes "what you did"` — marks
    done, merges the task branch back to base
-6. `python3 roadrunner.py commit TASK-XXX --notes "..."` — stages only files
+6. `roadrunner commit TASK-XXX --notes "..."` — stages only files
    in `files_expected` + roadrunner overlay (logs/, tasks.yaml, .reset_*) and
    commits with a conventional message. **Do not use `git add -A`** — it
    sweeps unrelated changes into your task commit. If the commit refuses,
    fix the out-of-scope files (stash, add to files_expected, or discard).
-7. `python3 roadrunner.py reset TASK-XXX --summary "one-line"` — writes the
+7. `roadrunner reset TASK-XXX --summary "one-line"` — writes the
    boundary marker for the next task
 
 ## Completion signal
@@ -1529,7 +1529,7 @@ your message. This halts the loop cleanly.
 
 If you resume the same task 5 times without completing it, the Stop hook will
 auto-block it and move on. If you hit a real blocker earlier than that,
-`python3 roadrunner.py block TASK-XXX --notes "why"` is the explicit path.
+`roadrunner block TASK-XXX --notes "why"` is the explicit path.
 
 ## File scope
 
@@ -1625,8 +1625,8 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("  1. Edit tasks/tasks.yaml — replace TASK-001 with your real first task.")
     print("  2. Review CLAUDE.md and tailor the agent brief to your project.")
     print("  3. Confirm .claude/settings.json wires up the hooks you want to run.")
-    print("  4. Run `python3 roadrunner.py status` to confirm the roadmap parses.")
-    print("  5. Start the loop with `python3 roadrunner.py next`.")
+    print("  4. Run `roadrunner status` to confirm the roadmap parses.")
+    print("  5. Start the loop with `roadrunner next`.")
     if skipped:
         print()
         print(f"Skipped {len(skipped)} existing path(s); they were left untouched.")
@@ -1822,7 +1822,7 @@ def cmd_session_start(args: argparse.Namespace) -> None:
             message = (
                 "You are resuming a roadrunner-driven session. No task is "
                 "in progress. Your first action:\n\n"
-                f"    python3 roadrunner.py start {next_task['id']}\n\n"
+                f"    roadrunner start {next_task['id']}\n\n"
                 "Then follow the brief below.\n\n" + brief
             )
         else:
@@ -1881,7 +1881,7 @@ def _build_task_brief(
         f"Acceptance criteria:\n{criteria or '  (none specified)'}\n\n"
         f"Validation commands (must pass before complete):\n{validation or '  (none)'}\n\n"
         f"Expected files:\n{files or '  (none)'}\n\n"
-        f"When done: run `python3 roadrunner.py complete {task['id']} --notes '...'`\n"
+        f"When done: run `roadrunner complete {task['id']} --notes '...'`\n"
         f"To signal full roadmap done: {sentinel_hint}."
     )
 

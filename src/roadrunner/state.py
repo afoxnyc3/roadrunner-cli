@@ -52,7 +52,7 @@ class RoadmapState(TypedDict, total=False):
 # Tests rebind these module-level names (see ``tests/test_roadrunner.py::tmp_project``)
 # to redirect state I/O into ``tmp_path``; that pattern is preserved.
 
-_PROJECT_ROOT = Path(__file__).parent
+_PROJECT_ROOT = Path(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
 STATE_FILE: Path = _PROJECT_ROOT / ".roadmap_state.json"
 STATE_LOCK: Path = _PROJECT_ROOT / ".roadmap_state.lock"  # sibling lockfile; survives os.replace
 
