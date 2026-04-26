@@ -430,16 +430,16 @@ When roadrunner stabilizes, package as `roadrunner-cli` on PyPI. Target projects
 
 | ADR | Title | Status |
 |---|---|---|
-| [ADR-001](docs/adr/001-line-anchored-completion-signal.md) | Line-Anchored Completion Signal | Accepted |
-| [ADR-002](docs/adr/002-check-stop-in-progress-awareness.md) | Check-Stop In-Progress Task Awareness | Accepted |
-| [ADR-003](docs/adr/003-retry-storm-prevention.md) | Per-Task Attempt Counter and Auto-Block | Accepted |
-| [ADR-004](docs/adr/004-atomic-writes-and-data-integrity.md) | Atomic File Writes for State Integrity | Accepted |
-| [ADR-005](docs/adr/005-absolute-hook-paths.md) | Absolute Hook Paths via $CLAUDE_PROJECT_DIR | Accepted |
-| [ADR-006](docs/adr/006-structured-trace-logging.md) | Structured JSON Trace Logging | Accepted |
-| [ADR-007](docs/adr/007-dead-hook-cleanup.md) | Dead Hook Cleanup (TaskCompleted, MultiEdit, PreCompact additionalContext) | Accepted |
-| [ADR-008](docs/adr/008-validation-timeout-and-task-id-sanitization.md) | Validation Timeout and Task ID Sanitization | Accepted |
-| [ADR-009](docs/adr/009-state-schema-versioning-and-concurrency-lock.md) | State Schema Versioning and Concurrency Lock | Accepted |
-| [ADR-010](docs/adr/010-hook-python-entrypoint-unification.md) | Hook → Python Entry Point Unification | Accepted |
+| [ADR-001](adr/001-line-anchored-completion-signal.md) | Line-Anchored Completion Signal | Accepted |
+| [ADR-002](adr/002-check-stop-in-progress-awareness.md) | Check-Stop In-Progress Task Awareness | Accepted |
+| [ADR-003](adr/003-retry-storm-prevention.md) | Per-Task Attempt Counter and Auto-Block | Accepted |
+| [ADR-004](adr/004-atomic-writes-and-data-integrity.md) | Atomic File Writes for State Integrity | Accepted |
+| [ADR-005](adr/005-absolute-hook-paths.md) | Absolute Hook Paths via $CLAUDE_PROJECT_DIR | Accepted |
+| [ADR-006](adr/006-structured-trace-logging.md) | Structured JSON Trace Logging | Accepted |
+| [ADR-007](adr/007-dead-hook-cleanup.md) | Dead Hook Cleanup (TaskCompleted, MultiEdit, PreCompact additionalContext) | Accepted |
+| [ADR-008](adr/008-validation-timeout-and-task-id-sanitization.md) | Validation Timeout and Task ID Sanitization | Accepted |
+| [ADR-009](adr/009-state-schema-versioning-and-concurrency-lock.md) | State Schema Versioning and Concurrency Lock | Accepted |
+| [ADR-010](adr/010-hook-python-entrypoint-unification.md) | Hook → Python Entry Point Unification | Accepted |
 
 ---
 
