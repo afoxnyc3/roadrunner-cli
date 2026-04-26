@@ -1,5 +1,0 @@
-{
-  "task_id": "ROAD-005",
-  "summary": "PostCompact hook logs post_compact_verify to trace.jsonl after compaction.",
-  "at": "2026-04-25T02:24:03.311635+00:00"
-}
