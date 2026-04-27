@@ -36,9 +36,9 @@ health:
 snapshot:
     python3 roadrunner.py snapshot
 
-# Install dependencies
+# Install dependencies (editable, with dev extras)
 install:
-    pip install -r requirements.txt
+    pip install -e '.[dev]'
 
 # Make all hooks executable
 hooks:

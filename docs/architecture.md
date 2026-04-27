@@ -369,7 +369,7 @@ cp -r /path/to/roadrunner-cli/.claude ./.claude
 mkdir -p tasks logs
 # Create your tasks/tasks.yaml
 # Create your CLAUDE.md (use roadrunner-cli/CLAUDE.md as template)
-pip3 install -r requirements.txt
+pip3 install -e '.[dev]'
 roadrunner health
 ```
 
