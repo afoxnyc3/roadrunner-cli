@@ -36,6 +36,7 @@ tasks/tasks.yaml.tmp
 
 # Claude Code session-local
 .claude/scheduled_tasks.lock
+.claude/claudex/
 
 # OS
 .DS_Store
