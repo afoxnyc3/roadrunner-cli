@@ -19,13 +19,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Documentation cleanup for v1.0 ship** — `README.md` 358→173 lines,
+  `CONTRIBUTING.md` 239→108, `docs/architecture.md` 449→159 by linking
+  out to `docs/` for deep-dive content instead of duplicating it. The
+  `architecture.md` April-15 risk register (all items "FIXED") removed —
+  current risks track via ADRs and `docs/hotfix-log.md`. The stale "copy-in
+  vs external runner" embedding guidance and resolved open questions also
+  dropped from `architecture.md` (pip install + `roadrunner init` is the
+  shipping path). The PostCompact hook contract added to `architecture.md`
+  §2.4 (hook shipped in ROAD-005 but was undocumented).
+- **Frozen historical reviews moved to `docs/history/`** —
+  `code-review-audit.md` and `architecture-review-2026-04-15.md` now live
+  under `docs/history/` with a "historical snapshot" banner so readers
+  don't mistake them for current design docs. Their internal `DESIGN.md`
+  references are preserved as part of the original record.
 - **Documentation layout** — `DESIGN.md` moved to `docs/architecture.md`.
   Reduces the root file count and groups architectural reference
   material with the rest of the design docs (ADRs, configuration,
   workflow). Active links in `README.md`, `CONTRIBUTING.md`,
-  `docs/WORKFLOW.md`, and `hooks/README.md` updated. Historical files
-  (ADR-009, code-review-audit, architecture-review) keep their original
-  references as frozen records.
+  `docs/WORKFLOW.md`, and `hooks/README.md` updated.
+
+### Fixed
+
+- Stale references to `docs/resolution-plan-2026-04-24.md` (file no
+  longer in the working tree) scrubbed from
+  `.github/workflows/weekly-smoke.yml` and `src/roadrunner/session.py`
+  module docstring. ADR-011's reference is left intact — it already
+  hedges with "when present in working tree" and ADRs are append-only.
 - **Package layout** — moved the flat-module trio (`roadrunner.py`,
   `rr_state.py`, `rr_session.py`) into a proper `src/roadrunner/` package
   (`cli.py`, `state.py`, `session.py`) with `__init__.py` and
