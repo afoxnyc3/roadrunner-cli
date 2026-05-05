@@ -1,5 +1,9 @@
 # Roadrunner CLI — Comprehensive Code & Architecture Review
 
+> **Historical snapshot (2026-04-15).** References to `DESIGN.md` and the flat
+> `roadrunner.py` predate the move to `docs/architecture.md` and the
+> `src/roadrunner/` package layout. Kept as the original review record.
+
 > Reviewed: 2026-04-15 | Files read: roadrunner.py, all hooks/*, tests/test_roadrunner.py, tasks/tasks.yaml, DESIGN.md, CLAUDE.md, README.md, all ADRs, settings.json, state files
 > Research: EXA searches on agentic loop best practices (SitePoint 2026, Atlan 2026, Mindra 2026, LangGraph/CrewAI/AutoGen comparisons)
 

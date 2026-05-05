@@ -1,6 +1,5 @@
 """
-Session summary observability primitive (Issue 6 from
-docs/resolution-plan-2026-04-24.md).
+Session summary observability primitive.
 
 A "session" is one `claude` invocation against the roadmap. Three things make
 a session interesting after the fact:

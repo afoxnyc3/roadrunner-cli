@@ -3,7 +3,7 @@ name: weekly-smoke
 # Weekly regression guard for the cross-session state machine. The unit suite
 # can only catch behaviours observable within a single pytest invocation; this
 # workflow exercises tests/smoke/ which simulates SessionStart -> Stop boundaries
-# end-to-end. See docs/resolution-plan-2026-04-24.md, Issue 7.
+# end-to-end.
 #
 # Cadence: Mondays 06:00 UTC (chosen over nightly because roadrunner-cli has
 # low code-churn outside feature bursts; daily would be noisy).

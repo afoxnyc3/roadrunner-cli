@@ -1,5 +1,9 @@
 # Roadrunner CLI — Code Review Audit & Remediation Status
 
+> **Historical snapshot (2026-04-15).** References to `DESIGN.md` and pre-package
+> file paths predate the move to `docs/architecture.md` and the `src/roadrunner/`
+> package layout. Kept for traceability of the original review findings.
+
 > Audited: 2026-04-15 against commit `e83a337`
 > Sources: Code Review #2 (external), Codex Adversarial Review (external), authoritative Claude Code hooks reference (https://docs.claude.com/en/docs/claude-code/hooks)
 

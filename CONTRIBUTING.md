@@ -1,141 +1,57 @@
 # Contributing to Roadrunner
 
-Thanks for the interest. Roadrunner is a small, opinionated control loop:
-Python owns task selection, validation, and state; Claude Code owns
-implementation inside a single task boundary. Contributions should respect that
-split — most changes land in `src/roadrunner/cli.py`, a hook script, or documentation.
+Roadrunner is a small, opinionated control loop: Python owns task selection, validation, and state; Claude Code owns implementation inside a single task boundary. Most changes land in `src/roadrunner/cli.py`, a hook script, or documentation.
 
-If you are unsure whether a change fits, open an issue before writing code.
+If you're unsure whether a change fits, open an issue before writing code.
 
 ---
 
-## Dev environment setup
+## Dev environment
 
-Roadrunner targets Python **3.10+** on POSIX (macOS and Linux). Windows is
-not a supported platform.
+Roadrunner targets Python **3.10+** on POSIX (macOS and Linux). Windows is not supported.
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -e '.[dev]'
+just hooks                       # chmod +x hooks/*.sh
 ```
 
-`-e` gives you an editable checkout; `[dev]` installs `pytest` and `ruff`.
-
-### Making the hooks executable
-
-Fresh clones need the `.sh` bit set before the hooks will fire:
-
-```bash
-just hooks        # or: chmod +x hooks/*.sh
-```
+`-e` gives an editable checkout; `[dev]` adds pytest, ruff, and build.
 
 ---
 
-## Running tests
+## Local CI gate
 
 ```bash
-pytest tests/ -v
+just ci                          # pytest + ruff — same gate CI runs
 ```
 
-The suite is fast (~3 s, 140+ tests). Everything is in-tree; there is no
-network, database, or external service. A run that touches hook scripts may
-spawn `bash` subprocesses — that is expected.
-
-Run a single file:
-
-```bash
-pytest tests/test_roadrunner.py -v
-```
-
-Run a single test:
-
-```bash
-pytest tests/test_roadrunner.py::TestStart::test_creates_branch -v
-```
-
----
-
-## Running lint
-
-```bash
-ruff check src/ tests/ hooks/
-```
-
-Ruff config lives in `pyproject.toml` (`[tool.ruff]`). Line length is **140**;
-the rule selection is intentionally narrow (`E`, `F`, `W`). Type checking with
-mypy is also configured — run `mypy src` if you touch a non-trivial
-type boundary.
-
-Auto-format is opt-in:
-
-```bash
-ruff format src/ tests/ hooks/
-```
-
----
-
-## Running the full CI gate locally
-
-```bash
-just ci
-```
-
-That shells out to `pytest tests/ -v && ruff check src/ hooks/ tests/`.
-It is the same gate CI runs. If `just ci` is green, your PR is ready.
-
-For ad-hoc combos, the justfile also has `just test`, `just lint`, `just
-status`, `just health`, `just snapshot`.
+If `just ci` is green, the PR is ready. Ad-hoc runners: `just test`, `just lint`, `pytest tests/test_roadrunner.py::TestStart::test_creates_branch -v`. Auto-format with `ruff format src/ tests/ hooks/` (opt-in). `mypy src` for type-boundary changes.
 
 ---
 
 ## PR workflow
 
-### Branch naming
+**Branch naming.** Task branches are auto-created by `roadrunner start <TASK-ID>` as `roadrunner/<TASK-ID>`. For changes outside the roadmap loop, use `docs/…`, `fix/…`, `refactor/…`, `chore/…`.
 
-Task branches are auto-created by `roadrunner start <TASK-ID>` and
-follow the pattern `roadrunner/<TASK-ID>`. For changes outside the roadmap
-loop (e.g., a doc fix), use a descriptive prefix: `docs/…`, `fix/…`,
-`refactor/…`, `chore/…`.
+**Commits.** Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`). For task work, `roadrunner commit <TASK-ID>` generates the message and scopes the commit to `files_expected` + the roadmap overlay.
 
-### Commit style
+**Reviewers look for:**
 
-Conventional Commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`,
-`test:`). The built-in `roadrunner commit <TASK-ID>` subcommand
-generates conventional messages automatically and scopes the commit to
-`files_expected` + the roadrunner overlay — use it when landing a task.
-
-### What reviewers look for
-
-1. **Validation commands pass.** `roadrunner validate <TASK-ID>`
-   must exit 0. A passing validator is the gate; reviewer taste is the
-   sanity check layered on top.
-2. **Scope discipline.** Only files in the task's `files_expected` (+ roadmap
-   overlay: `logs/`, `tasks.yaml`, `.reset_*`, `.context_snapshot.json`) are
-   touched. Out-of-scope drift is the #1 rejection reason.
-3. **Tests before code.** New behavior has a test. Bug fixes include a
-   regression test that fails on `main` and passes on the branch.
-4. **No backwards-compat cruft.** Renames, deletions, and schema changes
-   should be clean — no "deprecated" aliases unless the schema is versioned
-   (see `STATE_SCHEMA_VERSION` contract in `docs/configuration.md`).
-5. **Hooks never block the loop.** Observability hooks (`PostToolUse`,
-   `PreCompact`, `PostCompact`) must exit 0 and never emit decision JSON.
-   Only the Stop hook gates continuation.
+1. **Validation passes.** `roadrunner validate <TASK-ID>` exits 0. The validator is the gate; reviewer taste is the layer on top.
+2. **Scope discipline.** Only files in `files_expected` (+ overlay: `logs/`, `tasks.yaml`, `.reset_*`, `.context_snapshot.json`). Out-of-scope drift is the #1 rejection reason.
+3. **Tests before code.** New behavior has a test. Bug fixes include a regression test that fails on `main` and passes on the branch.
+4. **No backwards-compat cruft.** Renames, deletions, and schema changes should be clean. Aliases only when the schema is versioned (see `STATE_SCHEMA_VERSION`).
+5. **Only Stop gates the loop.** `PostToolUse`, `PreCompact`, `PostCompact` are observability hooks — they must exit 0 with no decision JSON.
 
 ---
 
-## How to add a new roadrunner subcommand
+## Adding a subcommand
 
-Every subcommand is a two-step change in `src/roadrunner/cli.py`:
+Two-step change in `src/roadrunner/cli.py`:
 
-1. **Write the handler.** Add `def cmd_<name>(args: argparse.Namespace) -> None`
-   somewhere in the CLI commands section.
-2. **Register it in `main()`.** Two edits:
-   - Add a subparser: `sub.add_parser("<name>")` (add `add_argument` calls
-     for any flags).
-   - Add the handler to the `dispatch` dict: `"<name>": cmd_<name>`.
-
-Example — a trivial `ping` subcommand:
+1. **Write the handler.** `def cmd_<name>(args: argparse.Namespace) -> None`.
+2. **Register in `main()`.** Add `sub.add_parser("<name>")` (with any `add_argument` calls) and `"<name>": cmd_<name>` in the dispatch dict.
 
 ```python
 def cmd_ping(args: argparse.Namespace) -> None:
@@ -143,97 +59,50 @@ def cmd_ping(args: argparse.Namespace) -> None:
 
 # in main():
 sub.add_parser("ping", help="Health check — prints 'pong'")
-# ...
-dispatch = {
-    # ...
-    "ping": cmd_ping,
-}
+dispatch = {..., "ping": cmd_ping}
 ```
 
-Add a test in `tests/test_roadrunner.py` and (if the command mutates state or
-touches disk) an integration test too.
+Add a unit test in `tests/test_roadrunner.py`. If the command mutates state or touches disk, add an integration test too.
 
 ---
 
-## How to add a new hook
+## Adding a hook
 
-Claude Code hooks live in `hooks/*.sh` and are registered in
-`.claude/settings.json` under one of the supported event names (`Stop`,
-`SessionStart`, `PreCompact`, `PostCompact`, `PostToolUse`, etc.). The
-convention is:
+Hooks live in `hooks/*.sh` and are registered in `.claude/settings.json` under a supported event name (`Stop`, `SessionStart`, `PreCompact`, `PostCompact`, `PostToolUse`). The convention is a thin bash wrapper that delegates to a `roadrunner` subcommand — never business logic in bash.
 
-1. **Write a thin bash wrapper.** It delegates to a Python subcommand and
-   never contains business logic. Example skeleton:
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+roadrunner my-subcommand
+```
 
-   ```bash
-   #!/usr/bin/env bash
-   # hooks/myhook.sh
+Then register in `.claude/settings.json`:
 
-   set -euo pipefail
-   SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-   PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+```json
+"PostCompact": [{
+  "hooks": [{
+    "type": "command",
+    "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/myhook.sh",
+    "timeout": 30
+  }]
+}]
+```
 
-   roadrunner my-subcommand
-   ```
-
-   - `set -euo pipefail` always.
-   - Read stdin with `INPUT=$(cat)` if the hook receives a payload; pipe it
-     through to Python, do not parse JSON in bash.
-   - Informational hooks (side-effect only) should end with `|| true` and
-     `exit 0` so observability failures never break the loop.
-
-2. **Register in `.claude/settings.json`** under the appropriate event key:
-
-   ```json
-   "PostCompact": [
-     {
-       "hooks": [
-         {
-           "type": "command",
-           "command": "bash \"$CLAUDE_PROJECT_DIR\"/hooks/myhook.sh",
-           "timeout": 30
-         }
-       ]
-     }
-   ]
-   ```
-
-3. **Make it executable:** `chmod +x hooks/myhook.sh` (or `just hooks`).
-
-4. **Add a handler in `src/roadrunner/cli.py`** (see subcommand recipe above) and
-   test both layers: unit-test the Python subcommand, integration-test the
-   bash wrapper by piping a mock payload through it and asserting exit code
-   + trace event.
-
-### Hook decision contract (only Stop and friends)
-
-The Stop hook can emit JSON to gate or halt the agent:
-
-- `{"decision": "block", "reason": "..."}` — soft block, reason injected as
-  next-turn context.
-- `{"continue": false, "stopReason": "..."}` — hard halt, session
-  terminates.
-
-Every other hook is side-effect only and must exit 0 with no decision JSON.
-`PostCompact` in particular does **not** support decision control per the
-Claude Code hooks reference.
+`chmod +x hooks/myhook.sh` (or `just hooks`). See [`hooks/postcompact_hook.sh`](hooks/postcompact_hook.sh) as a worked example. Hook decision contracts are documented in [`docs/architecture.md`](docs/architecture.md#2-hook-contracts).
 
 ---
 
 ## File layout
 
-- `src/roadrunner/` — control loop package: `cli.py` (commands), `state.py` (atomic state I/O), `session.py` (session summaries). Pure stdlib + PyYAML.
-- `hooks/*.sh` — thin bash wrappers that delegate to Python.
+- `src/roadrunner/` — `cli.py` (commands), `state.py` (atomic state I/O), `session.py` (session summaries). Stdlib + PyYAML only.
+- `hooks/*.sh` — thin bash wrappers.
 - `.claude/settings.json` — hook registration + permission allowlist.
 - `tasks/tasks.yaml` — the roadmap; source of truth for task ordering.
-- `tests/` — `test_roadrunner.py` (unit) + `test_hooks.py` (integration).
-- `docs/configuration.md` — every tunable, every schema, state file layout.
-- `logs/` — work logs, trace.jsonl, rotated archives.
+- `tests/` — `test_roadrunner.py` (unit) + `test_hooks.py` (integration) + `tests/smoke/` (cross-session).
+- `docs/` — design, workflow, configuration, ADRs, hotfix log.
 
 ---
 
 ## Getting help
 
-File an issue at <https://github.com/afoxnyc3/roadrunner-cli/issues>. For
-design questions, read `docs/architecture.md` and `docs/WORKFLOW.md` first — most
-architectural decisions are recorded there or in `docs/adr/`.
+File an issue at <https://github.com/afoxnyc3/roadrunner-cli/issues>. For design questions, read [`docs/architecture.md`](docs/architecture.md) and [`docs/WORKFLOW.md`](docs/WORKFLOW.md) first.
