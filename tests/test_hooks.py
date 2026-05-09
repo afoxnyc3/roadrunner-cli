@@ -69,6 +69,51 @@ class TestStopHook:
         finally:
             marker.unlink(missing_ok=True)
 
+    def test_pause_marker_works_when_roadrunner_unresolvable(self, tmp_path):
+        """Marker check must run before the roadrunner resolver so a broken
+        or missing install can't hijack the loop — the operator can still
+        pause out and fix things."""
+        import shutil
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        shutil.copy2(HOOKS_DIR / "stop_hook.sh", hooks_dir / "stop_hook.sh")
+        (tmp_path / ".roadrunner_paused").touch()
+
+        # Strip PATH/PYTHONPATH so neither `command -v roadrunner` nor
+        # `python3 -c "import roadrunner"` can succeed. Keep enough PATH to
+        # still find bash + python3 themselves.
+        minimal_env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": os.environ.get("HOME", "/tmp"),
+        }
+        result = subprocess.run(
+            ["bash", str(hooks_dir / "stop_hook.sh")],
+            input='{"stop_hook_active": false}',
+            capture_output=True, text=True,
+            env=minimal_env,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert result.stdout.strip() == ""
+
+    def test_hook_active_guard_works_when_roadrunner_unresolvable(self, tmp_path):
+        """Same defense for the infinite-loop guard: a broken install
+        must not turn a stop_hook_active payload into a hard failure."""
+        import shutil
+        hooks_dir = tmp_path / "hooks"
+        hooks_dir.mkdir()
+        shutil.copy2(HOOKS_DIR / "stop_hook.sh", hooks_dir / "stop_hook.sh")
+        minimal_env = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": os.environ.get("HOME", "/tmp"),
+        }
+        result = subprocess.run(
+            ["bash", str(hooks_dir / "stop_hook.sh")],
+            input='{"stop_hook_active": true}',
+            capture_output=True, text=True,
+            env=minimal_env,
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
 
 # ── SessionStart Hook ────────────────────────────────────────────────────────
 

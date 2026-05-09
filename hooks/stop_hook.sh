@@ -26,28 +26,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 MAX_ITERATIONS="${ROADMAP_MAX_ITERATIONS:-100}"  # ROAD-010: session cap (was 50 lifetime)
 
-# Resolve a working roadrunner invocation:
-#   1. installed `roadrunner` console script (pip install roadrunner-cli)
-#   2. `python3 -m roadrunner` (covers editable installs and source checkouts
-#      where `pip install -e .` has been run)
-#   3. PYTHONPATH-injected source layout (fresh source checkout, no install)
-if command -v roadrunner >/dev/null 2>&1; then
-    RR=(roadrunner)
-elif python3 -c "import roadrunner" >/dev/null 2>&1; then
-    RR=(python3 -m roadrunner)
-elif [ -d "$PROJECT_ROOT/src/roadrunner" ]; then
-    RR=(env "PYTHONPATH=$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m roadrunner)
-else
-    echo "[roadrunner] cannot import the 'roadrunner' package; install with 'pip install roadrunner-cli' or 'pip install -e .'" >&2
-    exit 1
-fi
-
 # Read stdin from Claude Code
 INPUT=$(cat)
 
 # ── Infinite loop guard ───────────────────────────────────────────────────────
 # If stop_hook_active is true, a previous hook invocation already ran.
 # Allow Claude to stop to break the loop.
+#
+# This and the pause toggle below run BEFORE the roadrunner resolver so a
+# broken/missing install can't hijack the session — the operator can still
+# pause out and fix things.
 HOOK_ACTIVE=$(echo "$INPUT" | python3 -c "
 import json, sys
 try:
@@ -66,6 +54,22 @@ fi
 # `roadrunner pause` / `roadrunner resume`.
 if [ -f "$PROJECT_ROOT/.roadrunner_paused" ]; then
     exit 0
+fi
+
+# Resolve a working roadrunner invocation:
+#   1. installed `roadrunner` console script (pip install roadrunner-cli)
+#   2. `python3 -m roadrunner` (covers editable installs and source checkouts
+#      where `pip install -e .` has been run)
+#   3. PYTHONPATH-injected source layout (fresh source checkout, no install)
+if command -v roadrunner >/dev/null 2>&1; then
+    RR=(roadrunner)
+elif python3 -c "import roadrunner" >/dev/null 2>&1; then
+    RR=(python3 -m roadrunner)
+elif [ -d "$PROJECT_ROOT/src/roadrunner" ]; then
+    RR=(env "PYTHONPATH=$PROJECT_ROOT/src${PYTHONPATH:+:$PYTHONPATH}" python3 -m roadrunner)
+else
+    echo "[roadrunner] cannot import the 'roadrunner' package; install with 'pip install roadrunner-cli' or 'pip install -e .'" >&2
+    exit 1
 fi
 
 # ── Delegate to Python controller ─────────────────────────────────────────────
