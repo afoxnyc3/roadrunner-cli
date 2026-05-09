@@ -1684,3 +1684,32 @@ class TestWatch:
             proc.kill()
             pytest.fail("watch did not exit within 5s of SIGINT")
         assert rc == 0
+
+
+class TestPauseResume:
+    """Pause/resume marker file toggles the Stop-hook bypass."""
+
+    def test_pause_creates_marker(self, tmp_project, capsys):
+        roadrunner.cmd_pause(argparse.Namespace())
+        assert (tmp_project / ".roadrunner_paused").exists()
+        assert "paused" in capsys.readouterr().out.lower()
+
+    def test_resume_removes_marker(self, tmp_project, capsys):
+        (tmp_project / ".roadrunner_paused").touch()
+        roadrunner.cmd_resume(argparse.Namespace())
+        assert not (tmp_project / ".roadrunner_paused").exists()
+        assert "resumed" in capsys.readouterr().out.lower()
+
+    def test_resume_is_idempotent(self, tmp_project, capsys):
+        assert not (tmp_project / ".roadrunner_paused").exists()
+        roadrunner.cmd_resume(argparse.Namespace())  # must not raise
+        assert "resumed" in capsys.readouterr().out.lower()
+
+    def test_health_reports_paused_state(self, tmp_project, capsys):
+        (tmp_project / ".roadrunner_paused").touch()
+        roadrunner.cmd_health(argparse.Namespace())
+        assert "PAUSED" in capsys.readouterr().out
+
+    def test_health_silent_when_not_paused(self, tmp_project, capsys):
+        roadrunner.cmd_health(argparse.Namespace())
+        assert "PAUSED" not in capsys.readouterr().out

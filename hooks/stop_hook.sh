@@ -26,6 +26,36 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 MAX_ITERATIONS="${ROADMAP_MAX_ITERATIONS:-100}"  # ROAD-010: session cap (was 50 lifetime)
 
+# Read stdin from Claude Code
+INPUT=$(cat)
+
+# ── Infinite loop guard ───────────────────────────────────────────────────────
+# If stop_hook_active is true, a previous hook invocation already ran.
+# Allow Claude to stop to break the loop.
+#
+# This and the pause toggle below run BEFORE the roadrunner resolver so a
+# broken/missing install can't hijack the session — the operator can still
+# pause out and fix things.
+HOOK_ACTIVE=$(echo "$INPUT" | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    print('true' if d.get('stop_hook_active') else 'false')
+except:
+    print('false')
+" 2>/dev/null || echo "false")
+
+if [ "$HOOK_ACTIVE" = "true" ]; then
+    exit 0
+fi
+
+# ── Pause toggle ──────────────────────────────────────────────────────────────
+# Bypass the loop for ad-hoc Claude Code sessions. Toggle via
+# `roadrunner pause` / `roadrunner resume`.
+if [ -f "$PROJECT_ROOT/.roadrunner_paused" ]; then
+    exit 0
+fi
+
 # Resolve a working roadrunner invocation:
 #   1. installed `roadrunner` console script (pip install roadrunner-cli)
 #   2. `python3 -m roadrunner` (covers editable installs and source checkouts
@@ -40,25 +70,6 @@ elif [ -d "$PROJECT_ROOT/src/roadrunner" ]; then
 else
     echo "[roadrunner] cannot import the 'roadrunner' package; install with 'pip install roadrunner-cli' or 'pip install -e .'" >&2
     exit 1
-fi
-
-# Read stdin from Claude Code
-INPUT=$(cat)
-
-# ── Infinite loop guard ───────────────────────────────────────────────────────
-# If stop_hook_active is true, a previous hook invocation already ran.
-# Allow Claude to stop to break the loop.
-HOOK_ACTIVE=$(echo "$INPUT" | python3 -c "
-import json, sys
-try:
-    d = json.load(sys.stdin)
-    print('true' if d.get('stop_hook_active') else 'false')
-except:
-    print('false')
-" 2>/dev/null || echo "false")
-
-if [ "$HOOK_ACTIVE" = "true" ]; then
-    exit 0
 fi
 
 # ── Delegate to Python controller ─────────────────────────────────────────────

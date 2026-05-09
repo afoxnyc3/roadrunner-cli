@@ -122,6 +122,8 @@ roadrunner reset TASK-001 --summary "boundary marker"
 # Observability + control
 roadrunner watch [--interval N]  # live read-only monitor
 roadrunner health                # system check
+roadrunner pause                 # bypass the Stop hook for ad-hoc sessions
+roadrunner resume                # re-engage the loop
 roadrunner reset-iteration       # reset session counter (--soft default, --hard nukes lifetime)
 
 # Hook entry points (called by Claude Code; rarely run by hand)
@@ -132,6 +134,10 @@ roadrunner check-stop            # Stop — decide whether the loop continues
 ```
 
 For the full Stop-hook decision tree and end-to-end workflow diagrams, see [`docs/WORKFLOW.md`](docs/WORKFLOW.md).
+
+### Ad-hoc sessions
+
+Sometimes you want to open a Claude Code session in this repo without the deterministic loop forcing task progression — for code review, exploratory work, or maintenance. Run `roadrunner pause` to drop a `.roadrunner_paused` marker; the Stop hook short-circuits to `exit 0` while the marker is present. Run `roadrunner resume` when you're ready to drive the roadmap again. The marker is local-only (gitignored) and `roadrunner health` flags it so you don't forget.
 
 ## Observability
 

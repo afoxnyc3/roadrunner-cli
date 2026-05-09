@@ -94,13 +94,16 @@ roadrunner health                        # system health check
 After every response, the Stop hook checks (in this order):
 
 1. Is `stop_hook_active` true? → allow stop (prevents infinite loop)
-2. Iteration limit reached? → hard stop with message
-3. Did you output `ROADMAP_COMPLETE` as the last line? → allow stop
-4. Is a task `in_progress`? → inject a resume brief and block stop
-5. Are there eligible `todo` tasks? → inject the next task brief and block stop
-6. Are tasks blocked? → report blocked tasks and block stop
-7. Are all tasks done? → prompt you to output `ROADMAP_COMPLETE`
+2. Is `.roadrunner_paused` present in the project root? → allow stop (ad-hoc bypass)
+3. Iteration limit reached? → hard stop with message
+4. Did you output `ROADMAP_COMPLETE` as the last line? → allow stop
+5. Is a task `in_progress`? → inject a resume brief and block stop
+6. Are there eligible `todo` tasks? → inject the next task brief and block stop
+7. Are tasks blocked? → report blocked tasks and block stop
+8. Are all tasks done? → prompt you to output `ROADMAP_COMPLETE`
 
 **Auto-block guard:** If you resume the same in-progress task 5+ times without completing it, the hook auto-blocks the task and tells you to move on.
+
+**Pause bypass:** `roadrunner pause` writes `.roadrunner_paused`; while it exists the hook short-circuits to `exit 0` so you can do ad-hoc work without the loop hijacking the session. `roadrunner resume` removes it. This is the supported way to bypass the loop — do not move `.claude/settings.json` aside.
 
 You do not need to manage this. The hook manages it. Just do the work.

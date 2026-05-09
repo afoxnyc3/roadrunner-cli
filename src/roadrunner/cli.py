@@ -1032,7 +1032,19 @@ def cmd_commit(args: argparse.Namespace) -> None:
     print(f"   {len(in_scope)} file(s) staged + committed")
 
 
+def cmd_pause(args: argparse.Namespace) -> None:
+    (ROOT / ".roadrunner_paused").touch()
+    print("Roadrunner paused. Stop hook will exit 0 until resumed.")
+
+
+def cmd_resume(args: argparse.Namespace) -> None:
+    (ROOT / ".roadrunner_paused").unlink(missing_ok=True)
+    print("Roadrunner resumed. Loop active.")
+
+
 def cmd_health(args: argparse.Namespace) -> None:
+    if (ROOT / ".roadrunner_paused").exists():
+        print("⚠️  PAUSED — .roadrunner_paused present. Run `roadrunner resume` to re-engage loop.")
     tasks = load_tasks()
     eligible = [t for t in tasks if is_eligible(t, tasks)]
     done = [t for t in tasks if t.get("status") == "done"]
@@ -1918,6 +1930,8 @@ def main() -> None:
     sub.add_parser("status")
     sub.add_parser("next")
     sub.add_parser("health")
+    sub.add_parser("pause")
+    sub.add_parser("resume")
     sub.add_parser("snapshot")
     sub.add_parser("session-start")
     sub.add_parser(
@@ -2024,6 +2038,8 @@ def main() -> None:
         "reset": cmd_reset,
         "reset-iteration": cmd_reset_iteration,
         "health": cmd_health,
+        "pause": cmd_pause,
+        "resume": cmd_resume,
         "check-stop": cmd_check_stop,
         "snapshot": cmd_snapshot,
         "session-start": cmd_session_start,
