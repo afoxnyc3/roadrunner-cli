@@ -3,8 +3,11 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # SessionStart Hook — fires when a Claude Code session begins or resumes.
 # Delegates to `roadrunner session-start` (or `python -m roadrunner
-# session-start`), which reads .context_snapshot.json and emits
-# additionalContext JSON (or exits silently if no snapshot exists).
+# session-start`), which reads tasks.yaml live and emits an
+# additionalContext directive for turn 1 (or exits silently if no
+# roadmap is present). The .context_snapshot.json file is intentionally
+# NOT consulted here — see cmd_session_start in src/roadrunner/cli.py
+# for the rationale (stale snapshots can poison context).
 #
 # Exit behavior:
 #   exit 0 always — this hook is informational, never blocks.
