@@ -24,6 +24,7 @@ dist/
 .roadmap_state.json
 .roadmap_state.json.tmp
 .roadmap_state.lock
+.roadrunner_paused
 .context_snapshot.json
 .reset_*
 logs/trace.jsonl
