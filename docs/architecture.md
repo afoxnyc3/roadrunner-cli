@@ -4,7 +4,7 @@
 
 Roadrunner is a deterministic agentic loop. **Python owns control.** **Claude owns implementation.** **Hooks enforce completion.** No task advances without validation. No loop exits without an explicit signal.
 
-```
+```text
 ┌────────────────────────── Claude Code Session ──────────────────────────┐
 │                                                                         │
 │   SessionStart hook          Stop hook            PreCompact hook       │

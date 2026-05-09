@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Documentation cleanup for v1.0 ship** — `README.md` 358→173 lines,
+- **Documentation cleanup for v1.0 ship** — `README.md` 358→176 lines,
   `CONTRIBUTING.md` 239→108, `docs/architecture.md` 449→159 by linking
   out to `docs/` for deep-dive content instead of duplicating it. The
   `architecture.md` April-15 risk register (all items "FIXED") removed —
