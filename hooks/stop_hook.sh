@@ -61,6 +61,13 @@ if [ "$HOOK_ACTIVE" = "true" ]; then
     exit 0
 fi
 
+# ── Pause toggle ──────────────────────────────────────────────────────────────
+# Bypass the loop for ad-hoc Claude Code sessions. Toggle via
+# `roadrunner pause` / `roadrunner resume`.
+if [ -f "$PROJECT_ROOT/.roadrunner_paused" ]; then
+    exit 0
+fi
+
 # ── Delegate to Python controller ─────────────────────────────────────────────
 # Pass stdin through to check-stop command which owns all logic.
 echo "$INPUT" | "${RR[@]}" check-stop --max-iterations "$MAX_ITERATIONS"

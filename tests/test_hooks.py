@@ -54,6 +54,21 @@ class TestStopHook:
         })
         assert result.returncode == 0
 
+    def test_pause_marker_short_circuits_hook(self):
+        """`.roadrunner_paused` in PROJECT_ROOT must make the hook exit 0 silently,
+        bypassing the check-stop delegation entirely."""
+        marker = PROJECT_ROOT / ".roadrunner_paused"
+        marker.touch()
+        try:
+            result = run_hook("stop_hook.sh", {
+                "stop_hook_active": False,
+                "last_assistant_message": "working",
+            })
+            assert result.returncode == 0
+            assert result.stdout.strip() == ""
+        finally:
+            marker.unlink(missing_ok=True)
+
 
 # ── SessionStart Hook ────────────────────────────────────────────────────────
 
