@@ -464,3 +464,12 @@ Roadmap finished — ROADMAP_COMPLETE signal received.
 ## 2026-05-28T11:56:47.764918+00:00 | ROAD-015 → done
 Top-level baseline_validation list[str] in tasks.yaml gates every task before its own validation_commands; short-circuits on first failure; task phase continues-on-failure (preserves pre-ROAD-015 UX); ValidationResult gains phase field; cmd_validate renders baseline/task blocks separately; trace events carry phase and per-phase pass booleans. This project's tasks.yaml sets baseline to the three CI commands — local↔CI parity is now structural. Language-agnostic (TS example documented). 10 new tests, 236 total passing, ruff + mypy clean. Backward-compat preserved.
 
+## 2026-05-28T11:58:12.002480+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T12:02:49.145398+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T12:03:48.824755+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+

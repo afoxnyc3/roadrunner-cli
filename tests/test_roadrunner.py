@@ -2267,6 +2267,152 @@ class TestProjectBase:
         assert not (root / "prev.txt").exists(), "TASK-NEXT must fork from main; prev.txt from TASK-PREV must be absent"
 
 
+class TestWriteWorkLog:
+    """Regression guard for the work-log overwrite bug observed on 2026-05-28:
+    `roadrunner complete` was unconditionally overwriting `logs/{task_id}.md`,
+    so any hand-authored narrative the agent wrote before completing the task
+    was silently lost. Fix: preserve content above WORK_LOG_MARKER, only
+    replace below it (idempotent across repeated complete/block runs)."""
+
+    def _make_task(self, **overrides):
+        base = {
+            "id": "TST-100",
+            "title": "Test task",
+            "status": "done",
+            "goal": "Do the thing.",
+            "acceptance_criteria": ["thing happened"],
+        }
+        base.update(overrides)
+        return base
+
+    def _make_result(self, command="true", passed=True, stderr=""):
+        return {
+            "command": command,
+            "passed": passed,
+            "returncode": 0 if passed else 1,
+            "stdout": "",
+            "stderr": stderr,
+        }
+
+    def test_work_log_writes_template_when_file_absent(self, tmp_project):
+        # Default case: no prior file → canonical template with H1, marker,
+        # and the full auto-generated block.
+        task = self._make_task()
+        roadrunner.write_work_log(task, [self._make_result()], notes="initial run")
+        log = (roadrunner.LOGS_DIR / "TST-100.md").read_text()
+        assert log.startswith("# Work Log: TST-100 — Test task")
+        assert roadrunner.WORK_LOG_MARKER in log
+        assert "## Goal" in log
+        assert "## Acceptance Criteria" in log
+        assert "## Validation" in log
+        assert "## Notes\ninitial run" in log
+
+    def test_work_log_preserves_hand_authored_prose_on_first_complete(self, tmp_project):
+        # The bug: the agent wrote a narrative before running `complete`.
+        # complete must preserve everything the agent wrote and append the
+        # auto block below a marker, NOT overwrite the file.
+        log_path = roadrunner.LOGS_DIR / "TST-100.md"
+        hand_authored = (
+            "# Work Log: TST-100 — Test task\n"
+            "\n"
+            "## Design rationale\n"
+            "I chose approach X because of trade-off Y. The alternative Z\n"
+            "would have meant Q, which we explicitly didn't want.\n"
+            "\n"
+            "## Follow-ups\n"
+            "- ROAD-NEXT should generalize the helper.\n"
+        )
+        log_path.write_text(hand_authored)
+
+        task = self._make_task()
+        roadrunner.write_work_log(task, [self._make_result()], notes="ran complete")
+
+        after = log_path.read_text()
+        # Every line of the original prose survives.
+        assert "## Design rationale" in after
+        assert "trade-off Y" in after
+        assert "## Follow-ups" in after
+        assert "ROAD-NEXT should generalize" in after
+        # And the auto block lands after the marker.
+        assert roadrunner.WORK_LOG_MARKER in after
+        head, _, tail = after.partition(roadrunner.WORK_LOG_MARKER)
+        assert "## Design rationale" in head
+        assert "## Goal" in tail
+        assert "## Validation" in tail
+        assert "ran complete" in tail
+
+    def test_work_log_idempotent_across_repeated_complete(self, tmp_project):
+        # Running `complete` twice in a row (e.g., validate→complete iteration)
+        # must NOT pile up duplicate validation transcripts. The marker is the
+        # boundary: replace from marker forward, don't append.
+        log_path = roadrunner.LOGS_DIR / "TST-100.md"
+        task = self._make_task()
+
+        roadrunner.write_work_log(task, [self._make_result(command="first")], notes="run-1")
+        first = log_path.read_text()
+        assert first.count(roadrunner.WORK_LOG_MARKER) == 1
+        assert "first" in first
+
+        roadrunner.write_work_log(task, [self._make_result(command="second")], notes="run-2")
+        second = log_path.read_text()
+        # Marker still appears exactly once — not duplicated.
+        assert second.count(roadrunner.WORK_LOG_MARKER) == 1
+        # The new run's data replaced the old.
+        assert "second" in second
+        assert "first" not in second
+        assert "run-2" in second
+        assert "run-1" not in second
+
+    def test_work_log_repeated_writes_preserve_prose(self, tmp_project):
+        # Stress test: hand-authored prose must survive MULTIPLE complete
+        # invocations, not just the first. The marker boundary holds across
+        # arbitrary numbers of runs.
+        log_path = roadrunner.LOGS_DIR / "TST-100.md"
+        log_path.write_text("# Work Log: TST-100 — Test task\n\n## My notes\nload-bearing.\n")
+        task = self._make_task()
+
+        for i in range(3):
+            roadrunner.write_work_log(task, [self._make_result()], notes=f"run-{i}")
+            content = log_path.read_text()
+            assert "## My notes" in content
+            assert "load-bearing" in content
+            assert f"run-{i}" in content
+            # Marker still single-instance.
+            assert content.count(roadrunner.WORK_LOG_MARKER) == 1
+
+    def test_work_log_empty_validation_omits_validation_section(self, tmp_project):
+        # cmd_block calls write_work_log with empty results. Don't render
+        # a hollow "## Validation (0/0 passed)" section — that's noise.
+        task = self._make_task(status="blocked")
+        roadrunner.write_work_log(task, [], notes="blocked because Q")
+        log = (roadrunner.LOGS_DIR / "TST-100.md").read_text()
+        assert "## Validation" not in log
+        assert "blocked because Q" in log
+
+    def test_work_log_block_then_prose_preserved(self, tmp_project):
+        # Realistic flow: task got blocked (write_work_log writes template),
+        # operator hand-edits the file to add a "Why blocked" section above
+        # the marker, then later complete fires (e.g. block was reverted).
+        # The hand-edited section must survive.
+        task = self._make_task(status="blocked")
+        roadrunner.write_work_log(task, [], notes="initial block")
+        log_path = roadrunner.LOGS_DIR / "TST-100.md"
+
+        # Operator adds prose ABOVE the marker.
+        content = log_path.read_text()
+        head, _, tail = content.partition(roadrunner.WORK_LOG_MARKER)
+        edited = head + "\n## Why blocked\nWaiting on upstream PR #42.\n\n" + roadrunner.WORK_LOG_MARKER + tail
+        log_path.write_text(edited)
+
+        # Later, status changes and complete fires.
+        task["status"] = "done"
+        roadrunner.write_work_log(task, [self._make_result()], notes="unblocked, done")
+        after = log_path.read_text()
+        assert "## Why blocked" in after
+        assert "Waiting on upstream PR #42" in after
+        assert "unblocked, done" in after
+
+
 class TestCompleteClearsState:
     """ROAD-023: cmd_complete must clear current_task_id in .roadmap_state.json
     so SessionStart / check_stop don't read a stale pointer to a just-done task."""

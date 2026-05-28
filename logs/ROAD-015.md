@@ -1,90 +1,70 @@
 # Work Log: ROAD-015 — Project-wide baseline validation suite
-**Completed:** 2026-05-28T11:56:47.764757+00:00
-**Status:** done
 
-## Goal
-Per-task validation_commands let each task drift from CI's gate. The
-2026-05-28 incident (mypy src/roadrunner vs CI's mypy src tests) shipped two red
-CI runs in a row because no runtime enforcement keeps the loop's gate aligned
-with CI's. CLAUDE.md conventions are suggestion-only; only the code path is
-deterministic.
+## Why this lands
 
-Add an optional top-level baseline_validation list[str] field to tasks.yaml.
-cmd_validate prepends those commands before each task's validation_commands,
-with first-failure short-circuit and a clear distinction in the failure report
-between baseline failures and task-specific failures. When baseline_validation
-is absent or empty, behavior is unchanged (backward compat for v1.0 projects).
+Per-task `validation_commands` let each task drift from CI's gate. The 2026-05-28
+incident (`mypy src/roadrunner` locally vs CI's `mypy src tests`) shipped two
+consecutive red CI runs because no runtime enforcement keeps the loop's gate
+aligned with CI's. CLAUDE.md conventions are read-once-then-drift —
+suggestion-only — so the gap could only be closed in code.
 
-This project sets baseline_validation to the three CI commands so the loop's
-validate gate is structurally equal to CI. The feature is language-agnostic by
-design: a TypeScript project sets npm test, eslint, npx tsc --noEmit; the
-runtime treats them as opaque shell commands.
+ROAD-015 moves "local equals CI" from convention into the validator itself.
 
+## Design decisions
 
-## Acceptance Criteria
-- tasks.yaml can declare a top-level baseline_validation list-of-strings field
-- cmd_validate runs every baseline command before the task's validation_commands
-- First baseline failure short-circuits the rest of validation (same exit semantics as per-task)
-- Validation output distinguishes baseline failures from task-specific failures
-- When baseline_validation is absent or empty, behavior is unchanged (backward compat)
-- This project's tasks.yaml has baseline_validation set to the three CI commands (pytest, ruff, mypy)
-- docs/configuration.md documents the new field with a language-agnostic note and a TypeScript example
-- tests/test_roadrunner.py adds a TestBaselineValidation class covering on/off/short-circuit/error-shape
-- All existing tests continue to pass
-- ruff check src/ hooks/ tests/ passes
-- python3 -m mypy src tests --ignore-missing-imports passes
+- **Two-phase model.** Baseline runs first, short-circuits on first failure;
+  task phase runs only if baseline passed, but continues on failure within
+  itself (preserves pre-ROAD-015 "see every task issue at once" UX).
+- **`phase` field on `ValidationResult`.** Lets renderers and trace consumers
+  attribute failures correctly. Cheap, structural, two-value enum.
+- **Language-agnostic by construction.** The runtime treats commands as opaque
+  shell invocations. Nothing in `run_validation` assumes Python. A TypeScript
+  project sets `npm test` / `eslint` / `tsc --noEmit` and the same machinery
+  works. This is the right altitude — roadrunner orchestrates, doesn't assume.
+- **No escape hatch.** No `skip_baseline: true` task field. Each opt-out is a
+  drift surface; the whole point of the feature is deterministic enforcement.
+  Add the field later if a real use case shows up.
 
-## Validation (10/10 passed)
+## Implementation
 
-### ✅ `python3 -m pytest tests/ -q`
-```
-........................................................................ [ 30%]
-........................................................................ [ 61%]
-........................................................................ [ 91%]
-....................                                                     [100%]
-236 passed in 7.22s
-```
+- `tasks.yaml` schema: optional top-level `baseline_validation: list[str]`.
+- `get_baseline_validation()` reads it via the existing `load_project_config()`
+  helper. Defensive parsing — non-list / non-string / empty entries return `[]`
+  so a typo degrades to "fewer baseline checks," never a wedged loop.
+- `run_validation` rewritten to two-phase with short-circuit + phase tagging.
+- `cmd_validate` output renders `── baseline ──` and `── task ──` blocks
+  separately; prints "Baseline failed — task-specific commands were not run."
+  between them when applicable.
+- Trace events: `validation_command` carries `phase`; `validation_complete`
+  carries `baseline_passed` + `task_passed` booleans for attribution.
+- This project's `tasks.yaml` now sets `baseline_validation` to the three CI
+  commands. Loop ⇔ CI parity is structural going forward.
 
-### ✅ `ruff check src/ hooks/ tests/`
-```
-All checks passed!
-```
+## Dogfood
 
-### ✅ `python3 -m mypy src tests --ignore-missing-imports`
-```
-Success: no issues found in 11 source files
-```
+`roadrunner validate ROAD-015` ran 3 baseline + 7 task = 10 ✅ — proves the
+feature is live and the task's own `validation_commands` stand alone even
+before the baseline mechanism was wired up (the task is self-validating
+either way).
 
-### ✅ `grep -q "baseline_validation" src/roadrunner/cli.py`
+## Backward compatibility
 
-### ✅ `grep -q "baseline_validation" docs/configuration.md`
+Absent / empty / malformed `baseline_validation` → `get_baseline_validation()`
+returns `[]` and `run_validation` behaves as pre-ROAD-015. Existing v1.0
+projects pick this up with zero migration effort.
 
-### ✅ `grep -q "^baseline_validation:" tasks/tasks.yaml`
+## Tests
 
-### ✅ `python3 -m pytest tests/ -q -k "baseline_validation"`
-```
-......                                                                   [100%]
-6 passed, 230 deselected in 0.07s
-```
+`TestBaselineValidation` covers: backward compat (absent/non-list/malformed),
+happy path (list passes through), defensive parsing, baseline-runs-before-task
+ordering, short-circuit on first baseline failure, task continue-on-failure
+preserved, empty/empty → no-op, baseline-only configuration, trace `phase` +
+per-phase pass booleans. 10 cases.
 
-### ✅ `python3 -m pytest tests/ -q`
-```
-........................................................................ [ 30%]
-........................................................................ [ 61%]
-........................................................................ [ 91%]
-....................                                                     [100%]
-236 passed in 7.17s
-```
+## Follow-ups
 
-### ✅ `ruff check src/ hooks/ tests/`
-```
-All checks passed!
-```
-
-### ✅ `python3 -m mypy src tests --ignore-missing-imports`
-```
-Success: no issues found in 11 source files
-```
-
-## Notes
-Top-level baseline_validation list[str] in tasks.yaml gates every task before its own validation_commands; short-circuits on first failure; task phase continues-on-failure (preserves pre-ROAD-015 UX); ValidationResult gains phase field; cmd_validate renders baseline/task blocks separately; trace events carry phase and per-phase pass booleans. This project's tasks.yaml sets baseline to the three CI commands — local↔CI parity is now structural. Language-agnostic (TS example documented). 10 new tests, 236 total passing, ruff + mypy clean. Backward-compat preserved.
+- The auto-generated work log was overwriting hand-authored prose (this log
+  was one of the casualties). Fixed in a follow-up commit on `main` —
+  `write_work_log` now preserves content above a `WORK_LOG_MARKER` and only
+  replaces the auto-generated section below it, idempotently across repeated
+  `complete`/`block` invocations.

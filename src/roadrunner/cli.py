@@ -835,13 +835,22 @@ def rotate_logs() -> None:
         print(f"[roadrunner] rotate_logs failed: {exc}", file=sys.stderr)
 
 
-def write_work_log(task: Task, validation_results: list[ValidationResult], notes: str = "") -> None:
-    log_path = LOGS_DIR / f"{task['id']}.md"
+WORK_LOG_MARKER = "<!-- roadrunner: auto-generated below this line; edit ABOVE only -->"
+
+
+def _build_work_log_auto_block(task: Task, validation_results: list[ValidationResult], notes: str) -> str:
+    """Render the deterministic portion of a work log: completion timestamp,
+    goal, acceptance criteria, validation transcript, notes.
+
+    Everything this function returns is auto-generated from task metadata +
+    validation output. Hand-authored prose (design rationale, decisions,
+    follow-ups) belongs ABOVE the WORK_LOG_MARKER in the work log file and
+    is preserved by write_work_log across repeated `complete` invocations.
+    """
     passed_count = sum(1 for r in validation_results if r["passed"])
     total = len(validation_results)
 
     lines = [
-        f"# Work Log: {task['id']} — {task.get('title', '')}",
         f"**Completed:** {_now()}",
         f"**Status:** {task.get('status')}",
         "",
@@ -852,22 +861,63 @@ def write_work_log(task: Task, validation_results: list[ValidationResult], notes
     for ac in task.get("acceptance_criteria", []):
         lines.append(f"- {ac}")
 
-    lines += [
-        "",
-        f"## Validation ({passed_count}/{total} passed)",
-    ]
-    for r in validation_results:
-        icon = "✅" if r["passed"] else "❌"
-        lines.append(f"\n### {icon} `{r['command']}`")
-        if r["stdout"]:
-            lines.append(f"```\n{r['stdout']}\n```")
-        if r["stderr"] and not r["passed"]:
-            lines.append(f"**stderr:**\n```\n{r['stderr']}\n```")
+    if validation_results:
+        lines += ["", f"## Validation ({passed_count}/{total} passed)"]
+        for r in validation_results:
+            icon = "✅" if r["passed"] else "❌"
+            lines.append(f"\n### {icon} `{r['command']}`")
+            if r["stdout"]:
+                lines.append(f"```\n{r['stdout']}\n```")
+            if r["stderr"] and not r["passed"]:
+                lines.append(f"**stderr:**\n```\n{r['stderr']}\n```")
 
     if notes:
         lines += ["", f"## Notes\n{notes}"]
 
-    log_path.write_text("\n".join(lines))
+    return "\n".join(lines)
+
+
+def write_work_log(task: Task, validation_results: list[ValidationResult], notes: str = "") -> None:
+    """Write the per-task work log at ``logs/{task_id}.md``.
+
+    Hand-authored prose (the agent wrote a narrative before running
+    ``complete``) is preserved. The auto-generated portion — completion
+    timestamp, goal, acceptance criteria, validation transcript, notes —
+    is written below a stable marker line so repeated ``complete`` /
+    ``block`` invocations replace only that section, idempotently.
+
+    Two modes:
+      * **File does not exist (or is empty):** write a fresh canonical
+        template — H1 title + marker + auto block.
+      * **File already exists with content:** preserve every line ABOVE
+        the marker (or the entire file, if no marker is present yet),
+        then append (or replace) the auto block below the marker. First
+        invocation against a hand-authored file appends the marker; second
+        and later invocations replace from the marker forward.
+    """
+    log_path = LOGS_DIR / f"{task['id']}.md"
+    auto_block = _build_work_log_auto_block(task, validation_results, notes)
+
+    if log_path.exists() and log_path.read_text().strip():
+        existing = log_path.read_text()
+        if WORK_LOG_MARKER in existing:
+            # Idempotent replace: keep everything before the marker, drop
+            # everything from the marker onward, re-emit the marker + a
+            # fresh auto block. Lets the agent run `validate`→`complete`
+            # repeatedly without piling up stale validation transcripts.
+            head = existing.split(WORK_LOG_MARKER)[0].rstrip()
+        else:
+            # First time writing into a hand-authored file. Preserve the
+            # entire existing content as prose, then add the marker +
+            # auto block as a new appended section.
+            head = existing.rstrip()
+        log_path.write_text(head + "\n\n" + WORK_LOG_MARKER + "\n\n" + auto_block + "\n")
+    else:
+        # No prior file — write the canonical template. The H1 lives ABOVE
+        # the marker so a future hand-edit of the title is preserved across
+        # subsequent complete/block runs.
+        header = f"# Work Log: {task['id']} — {task.get('title', '')}\n"
+        log_path.write_text(header + "\n" + WORK_LOG_MARKER + "\n\n" + auto_block + "\n")
 
 
 def write_reset_marker(task_id: str, summary: str) -> None:
