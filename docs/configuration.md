@@ -18,7 +18,7 @@ iteration cap).
 | `TASKS_BACKUP_KEEP`          | `5`             | Rolling `tasks.yaml.bak.N` copies retained on every `save_tasks` write. Oldest is evicted atomically via `Path.replace`. |
 | `LOG_ROTATE_BYTES`           | `10 * 1024²`    | Trigger threshold (10 MiB) for rotating `logs/trace.jsonl` and `logs/CHANGELOG.md`. Rotation runs at every task boundary. |
 | `LOG_RETAIN_DAYS`            | `7`             | Rotated/compressed logs older than this are deleted at the next rotation pass.                                        |
-| `STATE_SCHEMA_VERSION`       | `2`             | On-disk schema for `.roadmap_state.json`. Bump when the format changes incompatibly. See the migration contract below. |
+| `STATE_SCHEMA_VERSION`       | `3`             | On-disk schema for `.roadmap_state.json`. Bump when the format changes incompatibly. See the migration contract below. |
 | `SNAPSHOT_SCHEMA_VERSION`    | `1`             | On-disk schema for `.context_snapshot.json`. Bump when the PreCompact snapshot format changes incompatibly.           |
 
 ### Per-task validation timeout
@@ -42,6 +42,7 @@ anything else at load time.
 | Variable                 | Consumer                      | Effect                                                                           |
 | ------------------------ | ----------------------------- | -------------------------------------------------------------------------------- |
 | `ROADMAP_MAX_ITERATIONS` | `hooks/stop_hook.sh`          | Overrides the per-session iteration cap; passed to `roadrunner check-stop` as `--max-iterations`. Defaults to `100`. See "Runaway-Protection Cap" below. |
+| `ROADMAP_MAX_BUDGET_USD` | `roadrunner check-stop`       | Per-session USD budget cap. Read directly by `check-stop`; the `--max-budget-usd` flag overrides it. Feature is off when unset. See "Cost Budget Cap" below. |
 | `CLAUDE_PROJECT_DIR`     | every hook script + the CLI   | Set by Claude Code itself; the CLI uses it to anchor `ROOT` (and therefore `tasks.yaml`, `logs/`, `.roadmap_state.json`). You do not set this manually unless you're invoking the CLI from outside Claude Code. |
 
 ## Iteration Counters
@@ -88,6 +89,39 @@ The env var is read by `hooks/stop_hook.sh` and passed as `--max-iterations` to
 the cap was hit. The session terminates; Alex's next `claude` invocation starts
 fresh at session iteration 0 (because `SessionStart` resets it).
 
+## Cost Budget Cap
+
+ROAD-011 adds a second runaway-protection primitive that gates on dollars instead
+of turns. The Stop hook reads cumulative per-session cost from Claude Code's
+payload, accumulates it into `session_cost_usd` in `.roadmap_state.json`, and
+hard-halts the loop when the configured cap is met or exceeded.
+
+**Default:** off. A budget halt never fires unless an operator opts in.
+
+**Configure (env var):**
+
+```bash
+export ROADMAP_MAX_BUDGET_USD=10.00   # halt the session at $10 of spend
+```
+
+**Configure (flag, overrides env):**
+
+```bash
+roadrunner check-stop --max-budget-usd 5.00 < payload.json
+```
+
+**When the cap fires:** `check-stop` emits the same `{"continue": false,
+"stopReason": "..."}` hard-halt shape as the iteration cap, and writes a
+`budget_exceeded` event to `trace.jsonl`. Run `roadrunner reset-iteration --soft`
+to start a fresh session window (clears both `session_iteration` and
+`session_cost_usd`).
+
+**Graceful degradation:** if Claude Code's hook payload does not surface a cost
+field that `check-stop` recognises, the feature no-ops and emits a one-time
+warning to stderr — the loop never halts on a missing payload field. Recognised
+shapes include `total_cost_usd`, `cost_usd`, and `session_cost_usd` at either
+the top level or nested under `usage` / `cost`.
+
 ## Resetting Iteration Counters
 
 The `reset-iteration` subcommand provides manual control.
@@ -119,6 +153,23 @@ forward-compat contract:
 
 Adds `session_iteration: int` field. Default for legacy state files: `0`. No
 manual migration required; first load auto-fills.
+
+### Schema v2 → v3 (ROAD-011 + ROAD-014)
+
+Adds two fields in a single bump:
+
+- `session_cost_usd: float` — per-session cost accumulator used by the budget
+  cap (see [Cost Budget Cap](#cost-budget-cap)). Default for legacy state
+  files: `0.0`. Resets on every `SessionStart` fire and on `reset-iteration
+  --soft`.
+- `last_session_id: string | null` — most recent Claude Code session ID,
+  captured from the SessionStart hook payload. Consumed by `roadrunner resume
+  --session-id` to print a paste-able `claude --resume <id>` command. Default
+  for legacy state files: `null`. Survives `check-stop` and `reset-iteration`
+  (it points at the *prior* session, not the current one).
+
+No manual migration required; `read_state` fills both via `setdefault` on
+first load, and the next `write_state` persists the upgraded shape.
 
 ## `tasks.yaml` reference
 
@@ -164,6 +215,7 @@ Optional on every task:
 | `files_expected`        | list[string]   | `[]`          | Paths the task is allowed to touch. Used by `roadrunner commit` to scope staged changes.               |
 | `documentation_targets` | list[string]   | `[]`          | Documentation files that should also be updated. Advisory — informational only.                        |
 | `notes`                 | string         | `""`          | Free-form notes. Not interpreted by the control loop.                                                   |
+| `model`                 | string         | none          | ROAD-012: optional per-task model hint (e.g. `claude-haiku-4-5`). Surfaced in `status`, `next`, the resume brief, and every `check_stop` trace event so future analysis can correlate model choice with task outcome. Roadrunner itself does **not** route turns to a different model — operators who want enforcement wrap `claude` in a script that reads the field. Unknown IDs warn once per process, never block loading. |
 
 Schema validation (`validate_task_schema`) runs on every `load_tasks`. It
 rejects: missing required fields, invalid `id` format, unknown `status`,
@@ -196,29 +248,33 @@ The control-loop state file. Mutated on every `start`, `complete`, `block`,
 `reset`, and `check-stop`. Protected by an advisory POSIX lock
 (`.roadmap_state.lock`) and written atomically via `os.replace`.
 
-Schema v2 (current):
+Schema v3 (current):
 
 ```json
 {
-  "schema_version": 2,
-  "current_task_id": "ROAD-006",
-  "iteration": 116,
-  "session_iteration": 1,
+  "schema_version": 3,
+  "current_task_id": "ROAD-011",
+  "iteration": 117,
+  "session_iteration": 2,
+  "session_cost_usd": 1.42,
+  "last_session_id": "claude-session-abc123",
   "attempts_per_task": {
     "ROAD-001": 3,
     "ROAD-005": 5
   },
-  "updated_at": "2026-04-25T02:24:17.324121+00:00",
-  "base_branch": "roadrunner/ROAD-005"
+  "updated_at": "2026-05-27T22:00:00.000000+00:00",
+  "base_branch": "roadrunner/ROAD-011"
 }
 ```
 
 | Field               | Type            | Purpose                                                                                |
 | ------------------- | --------------- | -------------------------------------------------------------------------------------- |
-| `schema_version`    | int             | Matches `STATE_SCHEMA_VERSION` (currently `2`). Controls forward-compat gate.           |
+| `schema_version`    | int             | Matches `STATE_SCHEMA_VERSION` (currently `3`). Controls forward-compat gate.           |
 | `current_task_id`   | string \| null  | ID of the task currently `in_progress`, or null between boundaries.                    |
 | `iteration`         | int             | Lifetime audit counter. Never gates behavior. Only reset via `reset-iteration --hard`. |
-| `session_iteration` | int             | Per-session runaway-protection counter. Reset every `SessionStart` fire and via `reset-iteration`. Gates the cap. |
+| `session_iteration` | int             | Per-session runaway-protection counter. Reset every `SessionStart` fire and via `reset-iteration`. Gates the iteration cap. |
+| `session_cost_usd`  | float           | Per-session USD cost accumulator. Reset every `SessionStart` fire and via `reset-iteration --soft`/`--hard`. Gates the budget cap (ROAD-011). |
+| `last_session_id`   | string \| null  | Most recent Claude Code session ID captured by SessionStart. Read by `roadrunner resume --session-id`/`--exec` (ROAD-014). Survives `check-stop` and `reset-iteration`. |
 | `attempts_per_task` | dict[str, int]  | Count of resume cycles per task. Reaching `MAX_TASK_ATTEMPTS` (5) auto-blocks the task. |
 | `updated_at`        | ISO-8601 string | UTC timestamp of the last write.                                                       |
 | `base_branch`       | string          | The branch in play when the last `start` ran — used to recover the base branch after task merges. |

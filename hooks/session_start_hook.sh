@@ -31,4 +31,9 @@ else
     exit 0  # SessionStart is informational; do not block startup
 fi
 
+# ROAD-014: stdin from Claude Code carries the session_id field that
+# cmd_session_start captures into .roadmap_state.json for later
+# `roadrunner resume --session-id`. The hook just plumbs it through —
+# the CLI is tolerant of empty/malformed stdin so manual invocation
+# (no stdin) still works.
 "${RR[@]}" session-start

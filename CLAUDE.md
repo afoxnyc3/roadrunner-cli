@@ -64,6 +64,7 @@ Not when you think it looks right. Not when the code exists. When validation pas
 - After each `complete`, treat the prior task as closed
 - On session start, the SessionStart hook injects a roadmap snapshot automatically
 - The `.context_snapshot.json` and `.roadmap_state.json` are your memory — read them if the snapshot seems stale
+- When you discover a non-obvious project fact during a task (unusual build command, flaky test, env var the script silently requires, file that moved), append a one-line entry to `logs/learnings.md` in the form `YYYY-MM-DD — terse fact`. The SessionStart hook surfaces the last 20 entries to the next session. Append-only; never edit prior entries.
 
 ---
 

@@ -10,6 +10,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`roadrunner resume --session-id` (ROAD-014)** — the SessionStart hook now
+  captures Claude Code's `session_id` from the hook payload into
+  `.roadmap_state.json` as `last_session_id`. The existing `roadrunner resume`
+  subcommand grows two mutually-exclusive flags: `--session-id` prints a
+  paste-able `claude --resume <id>` command using the captured ID, `--exec`
+  runs it directly. Without flags, `resume` keeps its existing pause-toggle
+  semantics. `roadrunner status` surfaces the captured ID when one exists.
+  Schema field `last_session_id: string | null` rides along with ROAD-011's
+  v2 → v3 bump (no second migration); legacy state files auto-fill `null`.
+  `check-stop` and `reset-iteration` preserve the value — it points at the
+  *prior* session, not the current one, so it must survive cap resets. See
+  `docs/configuration.md` § Per-task fields and the schema v3 section.
+- **Operator learnings log (ROAD-013)** — `logs/learnings.md` is a new
+  append-only journal of non-obvious project facts the agent discovers during
+  task execution (unusual build commands, flaky tests, env vars that must be
+  set, files that moved). The SessionStart hook reads the last 20 entries and
+  surfaces them in `additionalContext` so lessons persist across context
+  compaction and across `claude` restarts. `roadrunner status` reports the
+  entry count; `roadrunner init` scaffolds the file with a header in new
+  projects. Both the project's `CLAUDE.md` and the init scaffold's CLAUDE.md
+  template instruct the agent to append a one-line entry whenever it
+  discovers something worth keeping. See `docs/WORKFLOW.md` § Operator
+  Learnings Log for the full contract.
+- **Per-task model hint (ROAD-012)** — `tasks.yaml` accepts an optional
+  `model:` string field per task (e.g. `claude-haiku-4-5`, `claude-opus-4-7`).
+  Surfaced inline in `roadrunner status` (`[model]` suffix), above the goal in
+  `roadrunner next` and the Stop-hook resume brief, and on every `check_stop`
+  trace event for the active task so trace.jsonl readers can correlate model
+  choice with outcomes. `roadrunner analyze` reports a "Tasks by model"
+  breakdown when at least one task carries the field. Roadrunner itself does
+  not route turns to a different model — the field is a hint operators read
+  from a `claude`-wrapping script. Type-strict (non-empty string when present);
+  value-permissive (unknown IDs warn once per process, never error) so a
+  newly-released model never breaks loading. See `docs/configuration.md`
+  § Per-task fields for the contract.
+- **Cost budget halt (ROAD-011)** — `roadrunner check-stop` now enforces a
+  per-session USD budget alongside the existing iteration cap. Configure via
+  `ROADMAP_MAX_BUDGET_USD` env var or the new `--max-budget-usd` flag; flag
+  wins on conflict. Overruns emit the same `{"continue": false, "stopReason":
+  ...}` hard-halt shape as the iteration cap and record a `budget_exceeded`
+  trace event. `roadrunner status` and `roadrunner health` surface current
+  spend + configured cap. State schema bumped v2 → v3 to add the new
+  `session_cost_usd` field; legacy state files auto-migrate via `setdefault`
+  (default `0.0`). Feature is off by default; degrades gracefully with a
+  one-time stderr warning when Claude Code's payload does not surface cost
+  data. See `docs/configuration.md` § Cost Budget Cap for the full contract.
+
 ### Removed
 
 - **`requirements.txt`** — deleted the four-line backward-compat shim

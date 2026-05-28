@@ -40,8 +40,10 @@ except ImportError:  # pragma: no cover - Windows fallback keeps the module impo
 
 class RoadmapState(TypedDict, total=False):
     current_task_id: str | None
-    iteration: int              # lifetime-cumulative counter (audit trail)
-    session_iteration: int      # per-session counter; reset on SessionStart; gates the iteration cap (ROAD-010)
+    iteration: int  # lifetime-cumulative counter (audit trail)
+    session_iteration: int  # per-session counter; reset on SessionStart; gates the iteration cap (ROAD-010)
+    session_cost_usd: float  # ROAD-011: per-session cost accumulator; reset on SessionStart; gates the budget cap
+    last_session_id: str | None  # ROAD-014: most recent Claude Code session ID; consumed by `roadrunner resume --session-id`
     attempts_per_task: dict[str, int]
     updated_at: str
     base_branch: str
@@ -99,8 +101,10 @@ _PROJECT_ROOT = resolve_project_root()
 STATE_FILE: Path = _PROJECT_ROOT / ".roadmap_state.json"
 STATE_LOCK: Path = _PROJECT_ROOT / ".roadmap_state.lock"  # sibling lockfile; survives os.replace
 
-STATE_SCHEMA_VERSION = 2  # bump when .roadmap_state.json format changes incompatibly
-                          # v2 (ROAD-010): added session_iteration field; backward-compat via setdefault
+STATE_SCHEMA_VERSION = 3  # bump when .roadmap_state.json format changes incompatibly
+# v2 (ROAD-010): added session_iteration field; backward-compat via setdefault
+# v3 (ROAD-011): added session_cost_usd field; backward-compat via setdefault (0.0)
+#                also (ROAD-014, same bump) added last_session_id field; setdefault None
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -120,6 +124,8 @@ def write_state(
     attempts: dict | None = None,
     extra: dict | None = None,
     session_iteration: int | None = None,
+    session_cost_usd: float | None = None,
+    last_session_id: str | None = None,
 ) -> None:
     """Atomically write the roadmap state file. Caller is expected to hold
     ``_exclusive_state_lock()`` if concurrent Stop-hook fires are possible.
@@ -135,25 +141,42 @@ def write_state(
     correct without threading the field through every signature — only the
     call sites that mutate the session counter (cmd_check_stop,
     cmd_session_start) need to know about it.
-    """
-    if session_iteration is None:
-        existing = 0
-        if STATE_FILE.exists():
-            try:
-                data = json.loads(STATE_FILE.read_text())
-                if isinstance(data, dict):
-                    existing = int(data.get("session_iteration", 0))
-            except (OSError, json.JSONDecodeError, ValueError, TypeError):
-                existing = 0
-        effective_session_iter = existing
-    else:
-        effective_session_iter = session_iteration
 
-    state = {
+    ROAD-011: ``session_cost_usd`` follows the same preserve-or-override
+    contract as ``session_iteration``. Only check-stop, reset-iteration,
+    and session-start touch it explicitly.
+
+    ROAD-014: ``last_session_id`` follows the same contract — ``None`` means
+    preserve the persisted value (so cmd_check_stop and cmd_reset_iteration
+    don't accidentally erase the SessionStart capture), and a string sets it.
+    """
+    existing_session_iter = 0
+    existing_session_cost = 0.0
+    existing_session_id: str | None = None
+    needs_existing = session_iteration is None or session_cost_usd is None or last_session_id is None
+    if needs_existing and STATE_FILE.exists():
+        try:
+            data = json.loads(STATE_FILE.read_text())
+            if isinstance(data, dict):
+                existing_session_iter = int(data.get("session_iteration", 0))
+                existing_session_cost = float(data.get("session_cost_usd", 0.0))
+                raw_id = data.get("last_session_id")
+                if isinstance(raw_id, str):
+                    existing_session_id = raw_id
+        except (OSError, json.JSONDecodeError, ValueError, TypeError):
+            pass
+
+    effective_session_iter = existing_session_iter if session_iteration is None else session_iteration
+    effective_session_cost = existing_session_cost if session_cost_usd is None else float(session_cost_usd)
+    effective_session_id = existing_session_id if last_session_id is None else last_session_id
+
+    state: dict = {
         "schema_version": STATE_SCHEMA_VERSION,
         "current_task_id": current_task_id,
         "iteration": iteration,
         "session_iteration": effective_session_iter,
+        "session_cost_usd": effective_session_cost,
+        "last_session_id": effective_session_id,
         "attempts_per_task": attempts or {},
         "updated_at": _now(),
     }
@@ -180,6 +203,8 @@ def read_state() -> RoadmapState:
         "current_task_id": None,
         "iteration": 0,
         "session_iteration": 0,
+        "session_cost_usd": 0.0,
+        "last_session_id": None,
         "attempts_per_task": {},
     }
     if not STATE_FILE.exists():
@@ -214,6 +239,14 @@ def read_state() -> RoadmapState:
     # ROAD-010 (schema v2): older state files lack this field. Treat as 0 so
     # the first Stop-hook fire after upgrade starts a fresh session window.
     data.setdefault("session_iteration", 0)
+    # ROAD-011 (schema v3): older state files lack this field. Treat as 0.0;
+    # the next check-stop will populate it from the Stop-hook payload if cost
+    # data is available, otherwise it stays at 0.0 (feature no-ops).
+    data.setdefault("session_cost_usd", 0.0)
+    # ROAD-014 (schema v3): older state files lack last_session_id. Null
+    # means "no Claude Code session ID captured yet"; the next SessionStart
+    # fire populates it if the payload exposes session_id.
+    data.setdefault("last_session_id", None)
     return cast(RoadmapState, data)
 
 

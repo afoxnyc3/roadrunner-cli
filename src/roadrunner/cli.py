@@ -57,7 +57,7 @@ except ImportError:  # pragma: no cover - Windows fallback keeps the module impo
 class Task(TypedDict, total=False):
     id: str
     title: str
-    status: str                # "todo" | "in_progress" | "done" | "blocked"
+    status: str  # "todo" | "in_progress" | "done" | "blocked"
     depends_on: list[str]
     goal: str
     acceptance_criteria: list[str]
@@ -66,6 +66,7 @@ class Task(TypedDict, total=False):
     files_expected: list[str]
     documentation_targets: list[str]
     notes: str
+    model: str  # ROAD-012: optional per-task model hint (e.g. "claude-haiku-4-5")
 
 
 # RoadmapState is defined in rr_state.py and re-exported at the top of this
@@ -82,6 +83,7 @@ class ValidationResult(TypedDict, total=False):
     stderr: str
     timed_out: bool
 
+
 # ── Paths ────────────────────────────────────────────────────────────────────
 
 ROOT = resolve_project_root()
@@ -89,6 +91,7 @@ TASKS_FILE = ROOT / "tasks" / "tasks.yaml"
 LOGS_DIR = ROOT / "logs"
 CHANGELOG = LOGS_DIR / "CHANGELOG.md"
 TRACE_LOG = LOGS_DIR / "trace.jsonl"
+LEARNINGS_FILE = LOGS_DIR / "learnings.md"  # ROAD-013: operator learnings log
 TASKS_BACKUP = TASKS_FILE.with_suffix(".yaml.bak")
 # STATE_FILE and STATE_LOCK are owned by state.py and re-exported above.
 try:
@@ -105,15 +108,145 @@ except OSError:
 # ── Tunables ─────────────────────────────────────────────────────────────────
 # Collected here so operators have one place to adjust retention and safety knobs.
 
-DEFAULT_VALIDATION_TIMEOUT = 300   # seconds; per-task override via validation_timeout in tasks.yaml
-MAX_TASK_ATTEMPTS = 5              # auto-block a task after this many resume cycles without completion
-TASKS_BACKUP_KEEP = 5              # number of rolling tasks.yaml.bak.N copies to retain
+DEFAULT_VALIDATION_TIMEOUT = 300  # seconds; per-task override via validation_timeout in tasks.yaml
+MAX_TASK_ATTEMPTS = 5  # auto-block a task after this many resume cycles without completion
+TASKS_BACKUP_KEEP = 5  # number of rolling tasks.yaml.bak.N copies to retain
 LOG_ROTATE_BYTES = 10 * 1024 * 1024  # rotate when a log file exceeds 10 MB
-LOG_RETAIN_DAYS = 7                # delete rotated/compressed logs older than this
+LOG_RETAIN_DAYS = 7  # delete rotated/compressed logs older than this
 # STATE_SCHEMA_VERSION is owned by rr_state.py and re-exported above.
 # v2 (ROAD-010) adds the session_iteration field; older state files migrate
 # transparently via setdefault in rr_state.read_state.
-SNAPSHOT_SCHEMA_VERSION = 1        # bump when .context_snapshot.json format changes incompatibly
+# v3 (ROAD-011) adds the session_cost_usd field; same migration path.
+SNAPSHOT_SCHEMA_VERSION = 1  # bump when .context_snapshot.json format changes incompatibly
+
+# ROAD-013: cap on how many learnings lines get folded into the SessionStart
+# additionalContext. Twenty is enough to preserve recent operational facts
+# without bloating the agent's bootstrap context — older entries stay in the
+# file for the operator to read manually.
+LEARNINGS_TAIL_LINES = 20
+
+
+def _learnings_entries() -> list[str]:
+    """Return the non-blank, non-comment learnings entries in append order.
+
+    Lines starting with ``#`` are header markdown; lines starting with ``<!--``
+    are template placeholders. Skipping both keeps the count and the tail
+    aligned with what the operator considers an actual entry.
+    """
+    if not LEARNINGS_FILE.exists():
+        return []
+    try:
+        raw = LEARNINGS_FILE.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("<!--"):
+            continue
+        out.append(stripped)
+    return out
+
+
+def _learnings_tail(limit: int = LEARNINGS_TAIL_LINES) -> list[str]:
+    """Last ``limit`` learnings entries, oldest-first within the tail."""
+    entries = _learnings_entries()
+    if not entries:
+        return []
+    return entries[-limit:]
+
+
+# ROAD-012: known model prefixes / aliases for the optional per-task `model:`
+# field. The validator is intentionally permissive — it warns (not errors) on
+# unknown values so a newly-released model ID never breaks tasks.yaml loading.
+# Add new families here; specific point releases are matched by prefix.
+_KNOWN_MODEL_PREFIXES: tuple[str, ...] = (
+    "claude-",  # Anthropic Claude family (opus / sonnet / haiku, all generations)
+    "gpt-",  # OpenAI GPT family
+    "o1-",
+    "o3-",
+    "o4-",  # OpenAI reasoning models
+    "gemini-",  # Google Gemini
+    "llama-",  # Meta Llama
+    "mistral-",
+    "mixtral-",  # Mistral
+    "deepseek-",
+    "qwen-",
+)
+_KNOWN_MODEL_ALIASES: frozenset[str] = frozenset(
+    {
+        "haiku",
+        "sonnet",
+        "opus",  # Anthropic short names commonly used in operator scripts
+    }
+)
+
+# Module-level dedupe for the unknown-model warning so each unrecognized ID is
+# reported once per process rather than spamming on every load_tasks() call.
+_unknown_model_warnings_seen: set[str] = set()
+
+
+# ROAD-011: one-time stderr warning when a budget is configured but no per-turn
+# cost data is observed in the Stop-hook payload. Module-level so it deduplicates
+# across check-stop fires within a single process; the typical loop is one
+# process per Stop fire so this trips on the first fire and stays quiet for the
+# remainder of the session by virtue of the loop's natural cadence.
+_cost_data_warning_emitted = False
+
+# ROAD-011: candidate keys in the Stop-hook stdin payload for per-session cost
+# data. Claude Code's hook schema does not yet stabilize on a single name, so
+# we look at several plausible shapes and take the first one that parses as a
+# float. The shapes are nested-tolerant: ``usage.total_cost_usd`` is treated
+# the same as a top-level ``total_cost_usd``.
+_COST_KEY_CANDIDATES: tuple[tuple[str, ...], ...] = (
+    ("total_cost_usd",),
+    ("cost_usd",),
+    ("session_cost_usd",),
+    ("usage", "total_cost_usd"),
+    ("usage", "cost_usd"),
+    ("cost", "total_usd"),
+    ("cost", "usd"),
+)
+
+
+def _extract_session_cost_usd(payload: dict) -> float | None:
+    """Pull a session-cumulative USD cost out of the Stop-hook stdin payload.
+
+    Returns ``None`` if no recognised shape is present so the caller can keep
+    the previously-persisted value rather than zeroing it on every fire. Any
+    non-numeric value is treated as missing rather than raising — the budget
+    feature must never break the control loop on a malformed payload.
+    """
+    for path in _COST_KEY_CANDIDATES:
+        node: Any = payload
+        for key in path:
+            if not isinstance(node, dict) or key not in node:
+                node = None
+                break
+            node = node[key]
+        if isinstance(node, (int, float)) and not isinstance(node, bool):
+            return float(node)
+    return None
+
+
+def _resolve_max_budget_usd(arg_value: Any) -> float | None:
+    """Resolve --max-budget-usd from the CLI flag, falling back to the
+    ``ROADMAP_MAX_BUDGET_USD`` environment variable. Returns ``None`` when
+    the feature is disabled (neither source set). Non-numeric values are
+    treated as disabled so a typo doesn't silently halt the loop.
+    """
+    candidates: tuple[Any, ...] = (arg_value, os.environ.get("ROADMAP_MAX_BUDGET_USD"))
+    for raw in candidates:
+        if raw is None or raw == "":
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return None
+
 
 # Built from two fragments so the sentinel string never appears literally in the source
 # (protects against `is_completion_signal` misfiring on the file that defines it).
@@ -131,30 +264,48 @@ def validate_task_schema(task: dict, index: int) -> None:
     missing = REQUIRED_TASK_FIELDS - set(task.keys())
     if missing:
         task_id = task.get("id", f"<index {index}>")
-        raise ValueError(
-            f"Task {task_id} is missing required fields: {', '.join(sorted(missing))}"
-        )
+        raise ValueError(f"Task {task_id} is missing required fields: {', '.join(sorted(missing))}")
     task_id = task.get("id", "")
     if not TASK_ID_RE.match(str(task_id)):
-        raise ValueError(
-            f"Task {task_id!r} has invalid ID format. "
-            f"Must match [A-Z]+-\\d+ (e.g., TASK-001)"
-        )
+        raise ValueError(f"Task {task_id!r} has invalid ID format. Must match [A-Z]+-\\d+ (e.g., TASK-001)")
     status = task.get("status")
     if status not in VALID_TASK_STATUSES:
-        raise ValueError(
-            f"Task {task['id']}: invalid status {status!r}. "
-            f"Must be one of: {', '.join(sorted(VALID_TASK_STATUSES))}"
-        )
+        raise ValueError(f"Task {task['id']}: invalid status {status!r}. Must be one of: {', '.join(sorted(VALID_TASK_STATUSES))}")
     if not isinstance(task.get("validation_commands", []), list):
-        raise ValueError(
-            f"Task {task['id']}: validation_commands must be a list"
-        )
+        raise ValueError(f"Task {task['id']}: validation_commands must be a list")
     if not isinstance(task.get("depends_on", []), list):
         raise ValueError(f"Task {task['id']}: depends_on must be a list")
     timeout = task.get("validation_timeout")
     if timeout is not None and (not isinstance(timeout, (int, float)) or timeout <= 0):
         raise ValueError(f"Task {task['id']}: validation_timeout must be a positive number")
+    # ROAD-012: per-task model hint. Type-strict (must be a string if present)
+    # but value-permissive (unknown IDs warn, never error) so a newly-released
+    # model ID never breaks tasks.yaml loading.
+    model = task.get("model")
+    if model is not None:
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(f"Task {task['id']}: model must be a non-empty string")
+        if not _is_known_model(model) and model not in _unknown_model_warnings_seen:
+            _unknown_model_warnings_seen.add(model)
+            print(
+                f"[roadrunner] task {task['id']}: model {model!r} is not in the "
+                f"known-model list; treating as advisory. Add to "
+                f"_KNOWN_MODEL_PREFIXES in src/roadrunner/cli.py if this is a "
+                f"valid new release.",
+                file=sys.stderr,
+            )
+
+
+def _is_known_model(model_id: str) -> bool:
+    """ROAD-012: return True for known model IDs (prefix or alias match).
+
+    Intentionally permissive — used only to suppress the unknown-model warning,
+    not to gate loading. A False return is informational, never fatal.
+    """
+    normalized = model_id.strip().lower()
+    if normalized in _KNOWN_MODEL_ALIASES:
+        return True
+    return any(normalized.startswith(prefix) for prefix in _KNOWN_MODEL_PREFIXES)
 
 
 def load_tasks() -> list[Task]:
@@ -162,14 +313,11 @@ def load_tasks() -> list[Task]:
         with open(TASKS_FILE) as f:
             data = yaml.safe_load(f) or {}
     except FileNotFoundError as exc:
-        raise FileNotFoundError(
-            f"tasks file not found at {TASKS_FILE}. Create it before running any command."
-        ) from exc
+        raise FileNotFoundError(f"tasks file not found at {TASKS_FILE}. Create it before running any command.") from exc
     except yaml.YAMLError as exc:
         # Hard stop: without a valid queue the loop cannot make decisions.
         raise ValueError(
-            f"tasks file at {TASKS_FILE} is not valid YAML: {exc}. "
-            f"Check tasks/tasks.yaml.bak for the last known-good version."
+            f"tasks file at {TASKS_FILE} is not valid YAML: {exc}. Check tasks/tasks.yaml.bak for the last known-good version."
         ) from exc
     tasks = data.get("tasks", [])
     for i, task in enumerate(tasks):
@@ -689,9 +837,7 @@ def write_context_snapshot() -> None:
         "next_eligible": next_task["id"] if next_task else None,
         "status_summary": {t["id"]: t["status"] for t in tasks},
     }
-    (ROOT / ".context_snapshot.json").write_text(
-        json.dumps(snapshot, indent=2, ensure_ascii=False)
-    )
+    (ROOT / ".context_snapshot.json").write_text(json.dumps(snapshot, indent=2, ensure_ascii=False))
 
 
 # ── CLI commands ──────────────────────────────────────────────────────────────
@@ -703,9 +849,11 @@ def cmd_status(args: argparse.Namespace) -> None:
     print("─" * 60)
     for t in tasks:
         marker = "→" if t.get("status") == "in_progress" else " "
-        print(
-            f"{marker} {t['id']:<13} {t.get('status', 'todo'):<12} {t.get('title', '')}"
-        )
+        # ROAD-012: append the per-task model hint inline so a quick scan shows
+        # downshifted/upshifted tasks without changing the column layout.
+        model = t.get("model")
+        title_suffix = f"  [{model}]" if model else ""
+        print(f"{marker} {t['id']:<13} {t.get('status', 'todo'):<12} {t.get('title', '')}{title_suffix}")
     next_t = next_eligible_task(tasks)
     print(f"\nNext eligible: {next_t['id'] if next_t else 'None'}")
 
@@ -717,6 +865,29 @@ def cmd_status(args: argparse.Namespace) -> None:
     print(f"Iteration (session): {session_iter}")
     print(f"Iteration (lifetime): {lifetime_iter}")
 
+    # ROAD-011: session spend and configured budget. Always print spend so a
+    # zero baseline is visible; budget line is suppressed when unset to keep
+    # the default output uncluttered.
+    session_cost = float(state.get("session_cost_usd", 0.0))
+    budget = _resolve_max_budget_usd(None)
+    if budget is not None:
+        print(f"Session cost: ${session_cost:.2f} / ${budget:.2f} budget")
+    else:
+        print(f"Session cost: ${session_cost:.2f}")
+
+    # ROAD-013: count of operator-learnings entries. Even on a fresh install
+    # the line shows up as "Learnings: 0 entries" so operators see the
+    # affordance exists and know where to append.
+    learnings_count = len(_learnings_entries())
+    print(f"Learnings: {learnings_count} entries ({LEARNINGS_FILE.name})")
+
+    # ROAD-014: surface the last Claude Code session ID so the operator can
+    # see at a glance whether `roadrunner resume --session-id` has a target.
+    # Omitted entirely when not yet captured to keep fresh-install output clean.
+    last_session_id = state.get("last_session_id")
+    if isinstance(last_session_id, str) and last_session_id:
+        print(f"Last Claude session: {last_session_id}")
+
 
 def cmd_next(args: argparse.Namespace) -> None:
     tasks = load_tasks()
@@ -725,6 +896,11 @@ def cmd_next(args: argparse.Namespace) -> None:
         print("No eligible tasks.")
         return
     print(f"\nNext: {task['id']} — {task.get('title')}")
+    # ROAD-012: surface the per-task model hint above the goal so the operator
+    # sees it before scrolling through criteria.
+    model = task.get("model")
+    if model:
+        print(f"Model: {model}")
     print(f"Goal: {task.get('goal', 'N/A')}")
     print("Acceptance criteria:")
     for ac in task.get("acceptance_criteria", []):
@@ -738,9 +914,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         print(f"Task {args.task_id} not found.")
         sys.exit(1)
     if not is_eligible(task, tasks):
-        print(
-            f"Task {args.task_id} is not eligible (status={task.get('status')}, check deps)."
-        )
+        print(f"Task {args.task_id} is not eligible (status={task.get('status')}, check deps).")
         sys.exit(1)
 
     state = read_state()
@@ -844,7 +1018,9 @@ def cmd_block(args: argparse.Namespace) -> None:
     write_work_log(task, [], notes=args.notes or "")
     state = read_state()
     trace_event(
-        "task_block", task_id=args.task_id, iteration=state.get("iteration"),
+        "task_block",
+        task_id=args.task_id,
+        iteration=state.get("iteration"),
         extra={"notes": args.notes or ""},
     )
     print(f"🚫 {args.task_id} marked blocked.")
@@ -883,6 +1059,10 @@ def cmd_reset_iteration(args: argparse.Namespace) -> None:
             new_lifetime,
             state.get("attempts_per_task"),
             session_iteration=0,
+            # ROAD-011: cost is per-session, so a soft reset (which the operator
+            # uses to start a fresh session window after a cap fire) must clear
+            # it too — otherwise the new session begins already over budget.
+            session_cost_usd=0.0,
         )
     trace_event(
         "reset_iteration",
@@ -896,14 +1076,9 @@ def cmd_reset_iteration(args: argparse.Namespace) -> None:
     )
     mode = "hard" if hard else "soft"
     if hard:
-        print(
-            f"reset-iteration ({mode}): session=0, lifetime=0 "
-            f"(was {state.get('iteration', 0)})"
-        )
+        print(f"reset-iteration ({mode}): session=0, lifetime=0 (was {state.get('iteration', 0)})")
     else:
-        print(
-            f"reset-iteration ({mode}): session=0, lifetime={new_lifetime} (preserved)"
-        )
+        print(f"reset-iteration ({mode}): session=0, lifetime={new_lifetime} (preserved)")
 
 
 # ── Scope-aware commit (ROAD-021) ─────────────────────────────────────────────
@@ -914,12 +1089,10 @@ def cmd_reset_iteration(args: argparse.Namespace) -> None:
 _COMMIT_OVERLAY_PREFIXES: tuple[str, ...] = (
     "logs/",
     "tasks/tasks.yaml",  # covers tasks.yaml, tasks.yaml.bak, tasks.yaml.bak.N
-    ".reset_",           # any task's boundary marker — audit trail
+    ".reset_",  # any task's boundary marker — audit trail
 )
 
-_VALID_COMMIT_TYPES: frozenset[str] = frozenset(
-    {"feat", "fix", "chore", "docs", "refactor", "test", "perf", "style", "ci", "build"}
-)
+_VALID_COMMIT_TYPES: frozenset[str] = frozenset({"feat", "fix", "chore", "docs", "refactor", "test", "perf", "style", "ci", "build"})
 
 
 def _parse_porcelain(output: str) -> list[tuple[str, str]]:
@@ -970,8 +1143,7 @@ def cmd_commit(args: argparse.Namespace) -> None:
     commit_type = args.type or "feat"
     if commit_type not in _VALID_COMMIT_TYPES:
         print(
-            f"Invalid --type {commit_type!r}. Must be one of: "
-            f"{', '.join(sorted(_VALID_COMMIT_TYPES))}",
+            f"Invalid --type {commit_type!r}. Must be one of: {', '.join(sorted(_VALID_COMMIT_TYPES))}",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1038,6 +1210,41 @@ def cmd_pause(args: argparse.Namespace) -> None:
 
 
 def cmd_resume(args: argparse.Namespace) -> None:
+    # ROAD-014: overloaded subcommand.
+    #
+    # Default (no flags): toggle off the .roadrunner_paused marker — original
+    #   pause/resume semantics for ad-hoc bypass of the Stop hook loop.
+    # --session-id: print the `claude --resume <id>` command for the operator
+    #   to paste, using the last_session_id captured by SessionStart.
+    # --exec: same lookup, but exec `claude --resume <id>` in place rather
+    #   than printing it. Useful when scripting recovery from a crash.
+    want_session_id = bool(getattr(args, "session_id", False))
+    want_exec = bool(getattr(args, "exec_", False))
+
+    if want_session_id or want_exec:
+        state = read_state()
+        sid = state.get("last_session_id")
+        if not isinstance(sid, str) or not sid:
+            print(
+                "No Claude Code session ID has been recorded yet. "
+                "Start a session under the SessionStart hook so the ID is "
+                "captured into .roadmap_state.json, then re-run "
+                "`roadrunner resume --session-id`.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        if want_exec:
+            try:
+                os.execvp("claude", ["claude", "--resume", sid])
+            except OSError as exc:
+                print(
+                    f"failed to exec `claude --resume {sid}`: {exc}",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+        print(f"claude --resume {sid}")
+        return
+
     (ROOT / ".roadrunner_paused").unlink(missing_ok=True)
     print("Roadrunner resumed. Loop active.")
 
@@ -1049,12 +1256,21 @@ def cmd_health(args: argparse.Namespace) -> None:
     eligible = [t for t in tasks if is_eligible(t, tasks)]
     done = [t for t in tasks if t.get("status") == "done"]
     blocked = [t for t in tasks if t.get("status") == "blocked"]
-    print(
-        f"healthy — {len(done)}/{len(tasks)} done, {len(eligible)} eligible, {len(blocked)} blocked"
-    )
+    print(f"healthy — {len(done)}/{len(tasks)} done, {len(eligible)} eligible, {len(blocked)} blocked")
     last_session_line = rr_session.health_line()
     if last_session_line:
         print(last_session_line)
+
+    # ROAD-011: surface session spend + configured budget in the health summary
+    # so an operator running `roadrunner health` overnight can see the budget
+    # status alongside iteration/eligibility counts.
+    state = read_state()
+    session_cost = float(state.get("session_cost_usd", 0.0))
+    budget = _resolve_max_budget_usd(None)
+    if budget is not None:
+        print(f"budget: ${session_cost:.2f} / ${budget:.2f}")
+    elif session_cost > 0:
+        print(f"budget: ${session_cost:.2f} (no cap set)")
 
 
 def cmd_sessions(args: argparse.Namespace) -> None:
@@ -1279,21 +1495,101 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
         attempts = state.get("attempts_per_task", {})
         max_iter = int(args.max_iterations) if args.max_iterations else 100
         max_attempts = int(args.max_attempts) if args.max_attempts else MAX_TASK_ATTEMPTS
+
+        # ROAD-011: pull per-session cost out of the Stop-hook payload. If the
+        # field isn't there, preserve the previously-persisted value rather
+        # than zeroing it — Claude Code's payload schema isn't stable yet, so a
+        # missing field on one fire is not a signal to forget what we knew on
+        # the prior fire. cmd_session_start is the only place that resets to 0.
+        observed_cost = _extract_session_cost_usd(stdin_data)
+        previous_cost = float(state.get("session_cost_usd", 0.0))
+        session_cost_usd = observed_cost if observed_cost is not None else previous_cost
+        max_budget_usd = _resolve_max_budget_usd(getattr(args, "max_budget_usd", None))
+
+        # Emit the "no cost data available" warning exactly once per process
+        # when an operator has configured a budget but Claude Code isn't
+        # surfacing the field we look for. The feature still no-ops in this
+        # case so the loop keeps running — failing closed on a missing payload
+        # field would be more annoying than the cost overrun the budget is
+        # meant to catch.
+        global _cost_data_warning_emitted
+        if max_budget_usd is not None and observed_cost is None and previous_cost == 0.0 and not _cost_data_warning_emitted:
+            print(
+                "[roadrunner] ROADMAP_MAX_BUDGET_USD is set but no cost data was "
+                "found in the Stop-hook payload; budget halt is a no-op for this "
+                "session. Upgrade Claude Code or unset the budget to silence.",
+                file=sys.stderr,
+            )
+            _cost_data_warning_emitted = True
+
         write_state(
             state.get("current_task_id"),
             iteration,
             attempts,
             session_iteration=session_iteration,
+            session_cost_usd=session_cost_usd,
         )
+        # ROAD-012: include the active task's model hint in every check_stop
+        # event so trace.jsonl readers can correlate model choice with
+        # outcomes (auto-block rate, iteration spend, cost spend). Resolved
+        # here rather than from state because the field lives on the task,
+        # not on session state.
+        active_task_id = state.get("current_task_id")
+        active_model: str | None = None
+        if active_task_id:
+            try:
+                tasks_for_trace = load_tasks()
+                active = get_task(tasks_for_trace, active_task_id)
+                if active:
+                    active_model = active.get("model")
+            except (FileNotFoundError, ValueError):
+                # Tasks file unreadable mid-loop is already handled later;
+                # the trace just omits the field rather than crashing.
+                pass
         trace_event(
             "check_stop",
-            task_id=state.get("current_task_id"),
+            task_id=active_task_id,
             iteration=iteration,
             extra={
                 "max_iter": max_iter,
                 "session_iteration": session_iteration,
+                "session_cost_usd": round(session_cost_usd, 4),
+                "max_budget_usd": max_budget_usd,
+                "model": active_model,
             },
         )
+
+        # ROAD-011: budget halt fires before the iteration cap so an over-spend
+        # is reported with the right stopReason. Only triggers when cost data
+        # has actually been populated (>0) — a configured budget against a 0.0
+        # baseline would fire spuriously on the first fire.
+        if max_budget_usd is not None and session_cost_usd >= max_budget_usd and session_cost_usd > 0:
+            trace_event(
+                "budget_exceeded",
+                task_id=state.get("current_task_id"),
+                iteration=iteration,
+                extra={
+                    "session_cost_usd": round(session_cost_usd, 4),
+                    "max_budget_usd": max_budget_usd,
+                },
+            )
+            _finalize_session_quiet()
+            print(
+                json.dumps(
+                    {
+                        "continue": False,
+                        "stopReason": (
+                            f"Budget cap (${max_budget_usd:.2f}) reached for this "
+                            f"session: spent ${session_cost_usd:.2f}. Roadmap loop "
+                            f"halted. Raise ROADMAP_MAX_BUDGET_USD or run "
+                            f"'roadrunner reset-iteration --soft' to start a fresh "
+                            f"session window."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            sys.exit(0)
 
         if session_iteration >= max_iter:
             _finalize_session_quiet()
@@ -1364,9 +1660,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
                 )
                 print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
                 sys.exit(0)
-            brief = _build_task_brief(
-                in_flight, session_iteration, max_iter, resume=True
-            )
+            brief = _build_task_brief(in_flight, session_iteration, max_iter, resume=True)
             print(json.dumps({"decision": "block", "reason": brief}, ensure_ascii=False))
             sys.exit(0)
 
@@ -1379,10 +1673,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
         # No active or eligible task — check for blocked before declaring done
         blocked = [t["id"] for t in tasks if t.get("status") == "blocked"]
         if blocked:
-            msg = (
-                f"No eligible tasks. Blocked: {blocked}. Investigate and unblock, "
-                "or output ROADMAP_COMPLETE on its own line to halt."
-            )
+            msg = f"No eligible tasks. Blocked: {blocked}. Investigate and unblock, or output ROADMAP_COMPLETE on its own line to halt."
             print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
             sys.exit(0)
 
@@ -1516,6 +1807,21 @@ tasks:
     files_expected: []
 """
 
+_INIT_LEARNINGS_TEMPLATE = """\
+# Operator Learnings
+
+This file is the project's append-only log of non-obvious facts the agent
+discovered the hard way — build commands that look wrong but are right,
+flaky tests that need a retry, env vars that must be set before a script
+will work, file paths that moved, and any other "I wish I'd known this an
+hour ago" notes. Each entry is one line, dated, kept brief. The
+SessionStart hook reads the last 20 lines and surfaces them to the next
+session so the lessons stick across context boundaries. Append; do not
+edit prior entries (history is the point).
+
+<!-- Append new entries below. Format: `YYYY-MM-DD — terse fact`. -->
+"""
+
 _INIT_CLAUDE_MD_TEMPLATE = """\
 # CLAUDE.md — Roadmap Loop Agent Brief
 
@@ -1558,6 +1864,16 @@ Only edit files listed in the current task's `files_expected` and
 `documentation_targets`. If something outside scope needs changing, note it
 in the task's `--notes` or open a follow-up task — don't silently expand
 scope.
+
+## Operator learnings (logs/learnings.md)
+
+Whenever you discover a non-obvious project fact during a task — a build
+command that's unusual, a flaky test that needs a retry, an env var the
+script silently requires, a file that moved — append a one-line entry to
+`logs/learnings.md` in the form `YYYY-MM-DD — terse fact`. The SessionStart
+hook injects the last 20 entries into the next session's context so the
+lesson persists across compaction and across `claude` restarts. Treat it
+as append-only; never edit prior entries.
 """
 
 
@@ -1572,6 +1888,10 @@ def _init_plan(target: Path, source: Path) -> list[tuple[str, Path, Path | None,
         ("write", target / "tasks" / "tasks.yaml", None, _INIT_TASKS_TEMPLATE),
         ("mkdir", target / "logs", None, None),
         ("write", target / "logs" / ".gitkeep", None, ""),
+        # ROAD-013: ship the operator learnings log on init so the affordance
+        # is discoverable from day one. The header is the only content; the
+        # agent appends real entries as it works.
+        ("write", target / "logs" / "learnings.md", None, _INIT_LEARNINGS_TEMPLATE),
         ("write", target / "CLAUDE.md", None, _INIT_CLAUDE_MD_TEMPLATE),
     ]
     settings_src = source / ".claude" / "settings.json"
@@ -1685,7 +2005,7 @@ def _find_cycles(ids: list[str], dep_map: dict[str, list[str]]) -> list[list[str
             if dep not in color:
                 continue
             if color[dep] == GRAY and dep in stack:
-                cycle = stack[stack.index(dep):] + [dep]
+                cycle = stack[stack.index(dep) :] + [dep]
                 key = tuple(sorted(set(cycle)))
                 if key not in seen:
                     seen.add(key)
@@ -1733,9 +2053,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
 
     ids = [t["id"] for t in tasks if t.get("id")]
     id_set = set(ids)
-    dep_map: dict[str, list[str]] = {
-        t["id"]: list(t.get("depends_on") or []) for t in tasks if t.get("id")
-    }
+    dep_map: dict[str, list[str]] = {t["id"]: list(t.get("depends_on") or []) for t in tasks if t.get("id")}
 
     errors: list[str] = []
     warnings: list[str] = []
@@ -1765,6 +2083,22 @@ def cmd_analyze(args: argparse.Namespace) -> None:
         print(f"  other:       {counts['other']}")
     if critical_path:
         print(f"Critical path (longest dep chain): {critical_path} tasks")
+
+    # ROAD-012: tasks grouped by model hint. "(unset)" bucket counts tasks that
+    # rely on the operator's global default. Only printed when at least one
+    # task carries the field so the analyze output stays quiet for projects
+    # that don't use per-task models.
+    model_counts: dict[str, int] = {}
+    for t in tasks:
+        bucket = t.get("model") or "(unset)"
+        model_counts[bucket] = model_counts.get(bucket, 0) + 1
+    if any(k != "(unset)" for k in model_counts):
+        print()
+        print("Tasks by model:")
+        # Sort: unset bucket last, others alphabetically by model ID.
+        ordered = sorted(model_counts.items(), key=lambda kv: (kv[0] == "(unset)", kv[0]))
+        for model, count in ordered:
+            print(f"  {model:<24} {count}")
 
     if errors:
         print()
@@ -1816,6 +2150,26 @@ def cmd_session_start(args: argparse.Namespace) -> None:
     except OSError as exc:
         print(f"[roadrunner] session open failed: {exc}", file=sys.stderr)
 
+    # ROAD-014: Claude Code's SessionStart hook payload includes `session_id`.
+    # Capture it into .roadmap_state.json so `roadrunner resume --session-id`
+    # can hand the operator a `claude --resume <id>` command after a crash.
+    # Tolerant of an empty/missing/malformed payload (operator may invoke
+    # session-start by hand) — a missing session_id leaves last_session_id
+    # untouched rather than clearing the prior value.
+    captured_session_id: str | None = None
+    try:
+        if not sys.stdin.isatty():
+            raw_payload = sys.stdin.read()
+            if raw_payload.strip():
+                payload = json.loads(raw_payload)
+                if isinstance(payload, dict):
+                    sid = payload.get("session_id")
+                    if isinstance(sid, str) and sid.strip():
+                        captured_session_id = sid.strip()
+    except (OSError, ValueError, json.JSONDecodeError):
+        # Hook plumbing is best-effort observability; never block the loop on it.
+        captured_session_id = None
+
     # ROAD-010: SessionStart is the boundary that resets the per-session iteration
     # counter. Persist the reset atomically so the first Stop-hook fire of the
     # new session sees session_iteration=0 → 1 rather than carrying over the
@@ -1830,12 +2184,24 @@ def cmd_session_start(args: argparse.Namespace) -> None:
             iteration,
             state.get("attempts_per_task"),
             session_iteration=0,
+            # ROAD-011: parallel to session_iteration — cost is per-session and
+            # resets on the SessionStart boundary so the new run gets a fresh
+            # budget allowance.
+            session_cost_usd=0.0,
+            # ROAD-014: persist the freshly-captured Claude Code session ID
+            # (or preserve the prior value when capture failed — None means
+            # "no change" per write_state's contract).
+            last_session_id=captured_session_id,
         )
     trace_event(
         "session_start_reset",
         task_id=state.get("current_task_id"),
         iteration=iteration,
-        extra={"session_iteration": 0},
+        extra={
+            "session_iteration": 0,
+            "session_cost_usd": 0.0,
+            "session_id_captured": captured_session_id is not None,
+        },
     )
 
     # After reset, display starts from session_iteration=0; the first cap-check
@@ -1845,10 +2211,7 @@ def cmd_session_start(args: argparse.Namespace) -> None:
     in_flight = active_task(tasks)
     if in_flight is not None:
         brief = _build_task_brief(in_flight, session_display, 100, resume=True)
-        message = (
-            "You are resuming a roadrunner-driven session. A task is in "
-            "progress — continue from where it left off.\n\n" + brief
-        )
+        message = "You are resuming a roadrunner-driven session. A task is in progress — continue from where it left off.\n\n" + brief
     else:
         next_task = next_eligible_task(tasks)
         if next_task is not None:
@@ -1882,6 +2245,15 @@ def cmd_session_start(args: argparse.Namespace) -> None:
                         "line of your next message to halt the loop cleanly."
                     )
 
+    # ROAD-013: prepend the last N learnings entries so operational facts
+    # discovered in earlier sessions survive the context boundary. Skipped
+    # when the file has no entries so a fresh project doesn't get a
+    # "Learnings (0):" header floating in its bootstrap context.
+    tail = _learnings_tail()
+    if tail:
+        learnings_block = "Operator learnings (most recent first):\n" + "\n".join(f"  - {line}" for line in reversed(tail))
+        message = learnings_block + "\n\n" + message
+
     print(
         json.dumps(
             {
@@ -1895,22 +2267,24 @@ def cmd_session_start(args: argparse.Namespace) -> None:
     )
 
 
-def _build_task_brief(
-    task: Task, iteration: int, max_iter: int, resume: bool = False
-) -> str:
+def _build_task_brief(task: Task, iteration: int, max_iter: int, resume: bool = False) -> str:
     criteria = "\n".join(f"  - {ac}" for ac in task.get("acceptance_criteria", []))
     validation = "\n".join(f"  - {v}" for v in task.get("validation_commands", []))
     files = "\n".join(f"  - {f}" for f in task.get("files_expected", []))
     header = (
-        f"RESUME IN-PROGRESS TASK. Iteration {iteration}/{max_iter}."
-        if resume
-        else f"Continue working. Iteration {iteration}/{max_iter}."
+        f"RESUME IN-PROGRESS TASK. Iteration {iteration}/{max_iter}." if resume else f"Continue working. Iteration {iteration}/{max_iter}."
     )
     # Avoid embedding the completion sentinel as a bare line — describe it instead.
     sentinel_hint = f"output the completion sentinel (the word {_COMPLETION_SIGNAL}) on its own line"
+    # ROAD-012: surface the per-task model hint so the agent knows it was
+    # down/upshifted from the operator's default. Empty when the task omits
+    # the field — most tasks will, so the brief stays clean.
+    model = task.get("model")
+    model_line = f"Model: {model}\n" if model else ""
     return (
         f"{header}\n\n"
         f"CURRENT TASK: {task['id']} — {task.get('title')}\n"
+        f"{model_line}"
         f"Goal: {task.get('goal', 'N/A')}\n\n"
         f"Acceptance criteria:\n{criteria or '  (none specified)'}\n\n"
         f"Validation commands (must pass before complete):\n{validation or '  (none)'}\n\n"
@@ -1931,7 +2305,30 @@ def main() -> None:
     sub.add_parser("next")
     sub.add_parser("health")
     sub.add_parser("pause")
-    sub.add_parser("resume")
+    p_resume = sub.add_parser(
+        "resume",
+        help=(
+            "Without flags: clear the .roadrunner_paused marker. "
+            "With --session-id: print the `claude --resume <id>` command for "
+            "the captured Claude Code session. With --exec: run it directly."
+        ),
+    )
+    # ROAD-014: --session-id is a flag (no value) that switches resume into
+    # "print the captured claude --resume command" mode. --exec switches into
+    # the same lookup but exec's in place. dest=exec_ avoids the Python keyword.
+    resume_group = p_resume.add_mutually_exclusive_group()
+    resume_group.add_argument(
+        "--session-id",
+        dest="session_id",
+        action="store_true",
+        help="Print `claude --resume <id>` for the most recent captured session.",
+    )
+    resume_group.add_argument(
+        "--exec",
+        dest="exec_",
+        action="store_true",
+        help="Like --session-id, but exec the command directly instead of printing it.",
+    )
     sub.add_parser("snapshot")
     sub.add_parser("session-start")
     sub.add_parser(
@@ -1987,6 +2384,17 @@ def main() -> None:
     # ROAD-010: session-iteration cap default raised from 50 → 100.
     p_stop.add_argument("--max-iterations", default="100")
     p_stop.add_argument("--max-attempts", default=str(MAX_TASK_ATTEMPTS))
+    # ROAD-011: per-session USD budget cap. Falls back to ROADMAP_MAX_BUDGET_USD
+    # env var when the flag is absent; feature disabled when both are unset.
+    p_stop.add_argument(
+        "--max-budget-usd",
+        default=None,
+        help=(
+            "Per-session USD budget cap. Halts the loop with a hard stop when "
+            "the running session cost meets or exceeds this value. Overrides "
+            "ROADMAP_MAX_BUDGET_USD. Feature is off by default."
+        ),
+    )
 
     p_init = sub.add_parser("init", help="Scaffold a new roadrunner project directory")
     p_init.add_argument("target_dir", help="Target directory (use '.' for current working directory)")

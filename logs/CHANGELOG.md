@@ -332,3 +332,84 @@ Roadmap finished — ROADMAP_COMPLETE signal received.
 
 ## 2026-05-09T03:35:53.771270+00:00 | ALL → complete
 Roadmap finished — ROADMAP_COMPLETE signal received.
+## 2026-05-28T00:36:41.706113+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T00:45:05.756175+00:00 | ROAD-011 → in_progress
+
+
+## 2026-05-28T01:03:17.814530+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T01:04:09.523730+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T01:05:10.236246+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T01:06:06.681553+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T01:07:53.111399+00:00 | ROAD-011 → blocked
+Auto-blocked after 5 attempts without completion.
+
+## 2026-05-28T01:07:53.199904+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T01:08:05.484260+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T01:08:12.074015+00:00 | ROAD-011 → done
+Schema v3 with session_cost_usd; --max-budget-usd flag + ROADMAP_MAX_BUDGET_USD env var with flag precedence; budget_exceeded trace + hard-halt JSON shape; one-time stderr warning when payload lacks cost; session_cost reset on SessionStart and reset-iteration; status/health surface spend; 9 new tests, 187 total passing, ruff + mypy clean.
+
+## 2026-05-28T02:00:13.532716+00:00 | ROAD-012 → in_progress
+
+
+## 2026-05-28T02:03:08.279147+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:03:54.382516+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:04:08.281191+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:04:14.899529+00:00 | ROAD-012 → done
+Optional 'model:' field on tasks.yaml: type-strict validator with permissive value list (unknown IDs warn once, never error); surfaced in status, next, _build_task_brief, check_stop trace (null when unset), and cmd_analyze ('Tasks by model:' section, suppressed at zero). 15 new tests (test_*model_field*), 202 total passing, ruff + mypy clean. Runtime routing intentionally out of scope per acceptance criteria.
+
+## 2026-05-28T02:04:45.167307+00:00 | ROAD-013 → in_progress
+
+
+## 2026-05-28T02:07:52.538503+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:07:59.639939+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:08:45.444343+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:08:52.261885+00:00 | ROAD-013 → done
+logs/learnings.md scaffolded (init + project itself); _learnings_entries/_tail skip header markdown and HTML-comment placeholders; SessionStart prepends 'Operator learnings (most recent first):' block when non-empty; cmd_status reports 'Learnings: N entries'; docs/WORKFLOW.md gains § 5 (sections renumbered); CLAUDE.md and scaffold CLAUDE.md instruct the agent to append. 9 new tests, 211 total passing, ruff clean.
+
+## 2026-05-28T02:34:22.412681+00:00 | ROAD-014 → in_progress
+
+
+## 2026-05-28T02:36:59.605811+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:37:58.081652+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:38:31.764328+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:39:28.798620+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T02:39:35.969165+00:00 | ROAD-014 → done
+SessionStart hook payload's session_id captured into .roadmap_state.json as last_session_id (rides ROAD-011's v2->v3 bump, no second migration); cmd_resume overloaded with --session-id (print) and --exec (os.execvp); both exit 1 helpfully when no ID captured; check-stop and reset-iteration preserve the value (points at prior session); cmd_status surfaces it when set. 12 new tests (all match -k session_id), 223 total passing, ruff + mypy clean.
+
+## 2026-05-28T02:39:40.515719+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+

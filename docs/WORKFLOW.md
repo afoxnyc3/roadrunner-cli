@@ -255,7 +255,36 @@ flowchart LR
 
 ---
 
-## 5. Operator Cheat Sheet
+## 5. Operator Learnings Log
+
+`logs/learnings.md` is an append-only journal of non-obvious project facts the
+agent has discovered the hard way: a build command that looks wrong but is
+right, a flaky test that needs a retry, an env var that must be set before a
+script will work, a file that moved. The agent appends a one-line entry
+(format: `YYYY-MM-DD — terse fact`) whenever it learns something it wishes it
+had known at the start of the task.
+
+**Lifecycle:**
+
+- `roadrunner init <dir>` scaffolds the file with a header paragraph; the
+  rest is empty.
+- During a task, the agent appends one-line entries directly.
+- On every `SessionStart` hook fire, roadrunner reads the last 20 entries and
+  injects them into the next session's `additionalContext` so the lessons
+  persist across context compaction and across `claude` restarts.
+- `roadrunner status` reports the current entry count so the operator can
+  see whether the log is being used.
+
+**Discipline:** append-only. Never edit prior entries — history is the
+point, and the agent's future self trusts that what's there is what
+happened. If a learning turns out to be wrong, append a corrective entry
+rather than rewriting the original.
+
+The cap on injected lines (20) is a deliberate budget — the full file
+remains available for the operator to read manually; only the recent tail
+flows into agent context to keep bootstrap small.
+
+## 6. Operator Cheat Sheet
 
 | Task | Command |
 |---|---|
@@ -266,7 +295,7 @@ flowchart LR
 | Health snapshot | `roadrunner health` |
 | Unblock a task | Edit `status` back to `todo` in `tasks/tasks.yaml`, then `roadrunner status` |
 
-## 6. Related Docs
+## 7. Related Docs
 
 - [CLAUDE.md](../CLAUDE.md) — operating contract the agent follows
 - [architecture.md](architecture.md) — architectural rationale

@@ -84,6 +84,7 @@ def tmp_project(tmp_path):
         "CHANGELOG": roadrunner.CHANGELOG,
         "STATE_FILE": roadrunner.STATE_FILE,
         "TRACE_LOG": roadrunner.TRACE_LOG,
+        "LEARNINGS_FILE": roadrunner.LEARNINGS_FILE,
     }
     orig_state = {
         "STATE_FILE": rr_state.STATE_FILE,
@@ -96,6 +97,7 @@ def tmp_project(tmp_path):
     roadrunner.CHANGELOG = logs_dir / "CHANGELOG.md"
     roadrunner.STATE_FILE = tmp_path / ".roadmap_state.json"
     roadrunner.TRACE_LOG = logs_dir / "trace.jsonl"
+    roadrunner.LEARNINGS_FILE = logs_dir / "learnings.md"  # ROAD-013
     rr_state.STATE_FILE = tmp_path / ".roadmap_state.json"
     rr_state.STATE_LOCK = tmp_path / ".roadmap_state.lock"
 
@@ -201,6 +203,487 @@ class TestValidateTaskSchema:
             roadrunner.validate_task_schema(task, 0)
 
 
+# ── ROAD-012: tasks_yaml_model_field (per-task model hint) ───────────────────
+
+
+class TestTasksYamlModelField:
+    """ROAD-012: optional `model:` field on tasks.yaml entries.
+
+    Contract:
+      - Type-strict: must be a non-empty string when present (raises ValueError)
+      - Value-permissive: unknown IDs warn once per process, never raise
+      - Surfaced in: status, next, _build_task_brief, check_stop trace, analyze
+    """
+
+    def test_model_field_present_on_typeddict(self):
+        # Static-type integration: downstream typed consumers (mypy callers,
+        # in particular the rest of cli.py) must see the field.
+        assert "model" in roadrunner.Task.__annotations__
+
+    def test_known_model_accepted_without_warning(self, capsys):
+        # Reset module-level dedupe so this test is order-independent.
+        roadrunner._unknown_model_warnings_seen.clear()
+        task = {
+            "id": "TST-001",
+            "status": "todo",
+            "title": "T",
+            "model": "claude-haiku-4-5",
+        }
+        roadrunner.validate_task_schema(task, 0)
+        assert capsys.readouterr().err == ""
+
+    def test_short_alias_accepted_without_warning(self, capsys):
+        roadrunner._unknown_model_warnings_seen.clear()
+        for alias in ("haiku", "sonnet", "opus"):
+            roadrunner.validate_task_schema({"id": "TST-001", "status": "todo", "title": "T", "model": alias}, 0)
+        assert capsys.readouterr().err == ""
+
+    def test_unknown_model_warns_not_errors(self, capsys):
+        # Unknown IDs must NOT raise — forward compat is load-bearing here.
+        # A newly-released model ID landing in tasks.yaml should keep loading.
+        roadrunner._unknown_model_warnings_seen.clear()
+        task = {
+            "id": "TST-001",
+            "status": "todo",
+            "title": "T",
+            "model": "future-model-9000",
+        }
+        roadrunner.validate_task_schema(task, 0)  # must not raise
+        err = capsys.readouterr().err
+        assert "future-model-9000" in err
+        assert "not in the known-model list" in err
+
+    def test_unknown_model_warning_dedupes_within_process(self, capsys):
+        # Spam-prevention: validating 10 tasks pinned to the same unknown model
+        # should emit exactly one warning, not ten.
+        roadrunner._unknown_model_warnings_seen.clear()
+        for i in range(10):
+            roadrunner.validate_task_schema({"id": f"TST-{i:03d}", "status": "todo", "title": "T", "model": "future-model-9001"}, 0)
+        err = capsys.readouterr().err
+        assert err.count("future-model-9001") == 1
+
+    def test_non_string_model_raises(self):
+        # Type errors do raise — the warning path is reserved for unknown
+        # values, not malformed schema (which would corrupt downstream
+        # surfaces that assume str).
+        task = {"id": "TST-001", "status": "todo", "title": "T", "model": 42}
+        with pytest.raises(ValueError, match="model must be a non-empty string"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_empty_string_model_raises(self):
+        task = {"id": "TST-001", "status": "todo", "title": "T", "model": "   "}
+        with pytest.raises(ValueError, match="model must be a non-empty string"):
+            roadrunner.validate_task_schema(task, 0)
+
+    def test_brief_includes_model_when_set(self):
+        # _build_task_brief is the Stop-hook injection surface — the agent
+        # learns about per-task model choice from this string.
+        task = {
+            "id": "TST-001",
+            "status": "todo",
+            "title": "Pin to Haiku",
+            "model": "claude-haiku-4-5",
+            "goal": "x",
+            "acceptance_criteria": [],
+            "validation_commands": [],
+        }
+        brief = roadrunner._build_task_brief(task, 1, 100)
+        assert "Model: claude-haiku-4-5" in brief
+
+    def test_brief_omits_model_line_when_unset(self):
+        # Cleanliness: tasks without the field must not get a "Model: None"
+        # or blank "Model: " line cluttering the brief.
+        task = {
+            "id": "TST-001",
+            "status": "todo",
+            "title": "Default model",
+            "goal": "x",
+            "acceptance_criteria": [],
+            "validation_commands": [],
+        }
+        brief = roadrunner._build_task_brief(task, 1, 100)
+        assert "Model:" not in brief
+
+    def test_status_shows_model_inline(self, tmp_project, capsys):
+        tasks = roadrunner.load_tasks()
+        tasks[0]["model"] = "claude-opus-4-7"
+        roadrunner.save_tasks(tasks)
+        roadrunner.cmd_status(argparse.Namespace())
+        out = capsys.readouterr().out
+        assert "[claude-opus-4-7]" in out
+
+    def test_next_brief_shows_model(self, tmp_project, capsys):
+        tasks = roadrunner.load_tasks()
+        # Pin the first eligible task (TASK-002 in the fixture) so the next
+        # command's output is deterministic.
+        eligible = roadrunner.next_eligible_task(tasks)
+        assert eligible is not None
+        target = roadrunner.get_task(tasks, eligible["id"])
+        target["model"] = "claude-sonnet-4-6"
+        roadrunner.save_tasks(tasks)
+        roadrunner.cmd_next(argparse.Namespace())
+        out = capsys.readouterr().out
+        assert "Model: claude-sonnet-4-6" in out
+
+    def test_check_stop_trace_includes_model_for_active_task(self, tmp_project):
+        # The trace event is the durable telemetry — analysts correlate model
+        # choice with auto-block rate / cost / iteration spend after the fact.
+        tasks = roadrunner.load_tasks()
+        tasks[1]["status"] = "in_progress"
+        tasks[1]["model"] = "claude-haiku-4-5"
+        roadrunner.save_tasks(tasks)
+        roadrunner.write_state(tasks[1]["id"], 1)
+
+        args = type(
+            "Args",
+            (),
+            {
+                "max_iterations": "100",
+                "max_attempts": "5",
+                "max_budget_usd": None,
+            },
+        )()
+        import io
+
+        with patch("sys.stdin") as mock_stdin, patch("sys.stdout", io.StringIO()):
+            mock_stdin.read.return_value = json.dumps({"stop_hook_active": False, "last_assistant_message": "working"})
+            try:
+                roadrunner.cmd_check_stop(args)
+            except SystemExit:
+                pass
+        trace_lines = roadrunner.TRACE_LOG.read_text().splitlines()
+        check_stop_events = [json.loads(line) for line in trace_lines if line and json.loads(line).get("event") == "check_stop"]
+        assert check_stop_events, "expected at least one check_stop trace event"
+        assert check_stop_events[-1]["model"] == "claude-haiku-4-5"
+
+    def test_check_stop_trace_omits_model_when_unset(self, tmp_project):
+        # Tasks without the field must produce a null `model` key (not crash,
+        # not silently drop the field — downstream JSON readers can tell
+        # "no preference" apart from "field missing").
+        tasks = roadrunner.load_tasks()
+        tasks[1]["status"] = "in_progress"
+        roadrunner.save_tasks(tasks)
+        roadrunner.write_state(tasks[1]["id"], 1)
+
+        args = type(
+            "Args",
+            (),
+            {
+                "max_iterations": "100",
+                "max_attempts": "5",
+                "max_budget_usd": None,
+            },
+        )()
+        import io
+
+        with patch("sys.stdin") as mock_stdin, patch("sys.stdout", io.StringIO()):
+            mock_stdin.read.return_value = json.dumps({"stop_hook_active": False, "last_assistant_message": "working"})
+            try:
+                roadrunner.cmd_check_stop(args)
+            except SystemExit:
+                pass
+        trace_lines = roadrunner.TRACE_LOG.read_text().splitlines()
+        check_stop_events = [json.loads(line) for line in trace_lines if line and json.loads(line).get("event") == "check_stop"]
+        assert check_stop_events[-1]["model"] is None
+
+    def test_analyze_reports_tasks_by_model(self, tmp_project, capsys):
+        # analyze's "Tasks by model" section is the operator's read on whether
+        # the per-task model rollout is happening as planned.
+        tasks = roadrunner.load_tasks()
+        tasks[0]["model"] = "claude-haiku-4-5"
+        tasks[1]["model"] = "claude-haiku-4-5"
+        tasks[2]["model"] = "claude-opus-4-7"
+        roadrunner.save_tasks(tasks)
+        try:
+            roadrunner.cmd_analyze(argparse.Namespace(tasks_file=None))
+        except SystemExit:
+            pass
+        out = capsys.readouterr().out
+        assert "Tasks by model:" in out
+        assert "claude-haiku-4-5" in out
+        assert "claude-opus-4-7" in out
+
+    def test_analyze_omits_model_section_when_no_task_uses_it(self, tmp_project, capsys):
+        # Default projects (no per-task model anywhere) shouldn't see the
+        # noise. The section is informational and should disappear at zero.
+        try:
+            roadrunner.cmd_analyze(argparse.Namespace(tasks_file=None))
+        except SystemExit:
+            pass
+        out = capsys.readouterr().out
+        assert "Tasks by model:" not in out
+
+
+# ── ROAD-013: operator learnings log ─────────────────────────────────────────
+
+
+class TestLearningsLog:
+    """ROAD-013: append-only operational facts that persist across sessions.
+
+    Contract:
+      - File at logs/learnings.md; missing file is OK (empty list)
+      - Non-empty, non-comment, non-HTML-comment lines count as entries
+      - SessionStart hook surfaces the last 20 entries to additionalContext
+      - roadrunner status reports the count
+      - roadrunner init scaffolds the file in new projects
+    """
+
+    def test_entries_helper_skips_header_and_html_comments(self, tmp_project):
+        # The shipped header (markdown `#` lines + `<!-- … -->` placeholder)
+        # must not be counted as entries — otherwise a fresh install reports
+        # "Learnings: 11 entries" before anyone has appended anything.
+        roadrunner.LEARNINGS_FILE.write_text(
+            "# Operator Learnings\n"
+            "\n"
+            "Header paragraph that should not count.\n"
+            "<!-- placeholder -->\n"
+            "2026-05-27 — real entry one\n"
+            "2026-05-28 — real entry two\n"
+        )
+        entries = roadrunner._learnings_entries()
+        assert len(entries) == 3  # header paragraph (non-`#` text) + 2 real entries
+        assert entries[-1] == "2026-05-28 — real entry two"
+
+    def test_entries_helper_missing_file_returns_empty(self, tmp_project):
+        # No file → no entries, no exception. The feature must degrade
+        # gracefully on a project that hasn't been re-init'd post-upgrade.
+        if roadrunner.LEARNINGS_FILE.exists():
+            roadrunner.LEARNINGS_FILE.unlink()
+        assert roadrunner._learnings_entries() == []
+        assert roadrunner._learnings_tail() == []
+
+    def test_tail_caps_at_twenty(self, tmp_project):
+        # Spam-prevention: the SessionStart injection should never balloon
+        # context if the log has hundreds of entries. The full file remains
+        # on disk for the operator to grep manually.
+        lines = "\n".join(f"2026-01-{i:02d} — entry {i}" for i in range(1, 31))
+        roadrunner.LEARNINGS_FILE.write_text(lines + "\n")
+        tail = roadrunner._learnings_tail()
+        assert len(tail) == 20
+        # Tail is oldest-first within the window — entries 11..30, not 1..20.
+        assert tail[0] == "2026-01-11 — entry 11"
+        assert tail[-1] == "2026-01-30 — entry 30"
+
+    def test_status_reports_count(self, tmp_project, capsys):
+        roadrunner.LEARNINGS_FILE.write_text("# header\n2026-05-27 — fact one\n2026-05-28 — fact two\n")
+        roadrunner.cmd_status(argparse.Namespace())
+        out = capsys.readouterr().out
+        assert "Learnings: 2 entries" in out
+        assert "learnings.md" in out
+
+    def test_status_reports_zero_when_missing(self, tmp_project, capsys):
+        # Even when no learnings file exists, status must show the
+        # affordance so the operator knows where to start.
+        if roadrunner.LEARNINGS_FILE.exists():
+            roadrunner.LEARNINGS_FILE.unlink()
+        roadrunner.cmd_status(argparse.Namespace())
+        out = capsys.readouterr().out
+        assert "Learnings: 0 entries" in out
+
+    def test_session_start_injects_learnings_block(self, tmp_project, capsys):
+        # Core observable behavior: lessons survive the session boundary by
+        # riding in `additionalContext`.
+        roadrunner.LEARNINGS_FILE.write_text("# header\n2026-05-25 — older fact\n2026-05-27 — newer fact\n")
+        roadrunner.cmd_session_start(argparse.Namespace())
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert "Operator learnings" in ctx
+        # Most-recent-first order so the agent sees the freshest lesson at the top.
+        assert ctx.index("newer fact") < ctx.index("older fact")
+
+    def test_session_start_omits_block_when_no_entries(self, tmp_project, capsys):
+        # Fresh project shouldn't get an empty "Operator learnings:" header
+        # cluttering its bootstrap context.
+        if roadrunner.LEARNINGS_FILE.exists():
+            roadrunner.LEARNINGS_FILE.unlink()
+        roadrunner.cmd_session_start(argparse.Namespace())
+        payload = json.loads(capsys.readouterr().out)
+        ctx = payload["hookSpecificOutput"]["additionalContext"]
+        assert "Operator learnings" not in ctx
+
+    def test_init_scaffolds_learnings_file(self, tmp_path):
+        # `roadrunner init` is the discoverability surface — without scaffolding
+        # the file, new users would never know the affordance exists.
+        target = tmp_path / "new_project"
+        args = argparse.Namespace(target_dir=str(target), dry_run=False)
+        roadrunner.cmd_init(args)
+        learnings = target / "logs" / "learnings.md"
+        assert learnings.is_file()
+        content = learnings.read_text()
+        assert "Operator Learnings" in content
+        assert "append" in content.lower()
+
+    def test_init_dry_run_mentions_learnings_file(self, tmp_path, capsys):
+        # --dry-run output is the operator's preview of what init will do.
+        # If we silently skip the learnings file from the dry-run output,
+        # the operator can be surprised by an unexpected file on the real run.
+        target = tmp_path / "preview_project"
+        args = argparse.Namespace(target_dir=str(target), dry_run=True)
+        roadrunner.cmd_init(args)
+        out = capsys.readouterr().out
+        assert "learnings.md" in out
+
+
+# ── ROAD-014: roadrunner resume --session-id ─────────────────────────────────
+
+
+class TestSessionIdCapture:
+    """ROAD-014: SessionStart captures the Claude Code session_id and
+    `roadrunner resume --session-id` plays it back as a paste-able command.
+
+    Contract:
+      - SessionStart reads JSON stdin, persists payload.session_id to
+        .roadmap_state.json as last_session_id
+      - Missing/empty/malformed stdin preserves prior last_session_id
+      - check-stop and reset-iteration must NOT clear last_session_id
+        (only SessionStart writes it, and only when stdin carries an ID)
+      - `resume --session-id` prints `claude --resume <id>` from state
+      - `resume` with no flag preserves original pause-toggle semantics
+    """
+
+    def _run_session_start(self, stdin_payload, capsys):
+        """Drive cmd_session_start with a stdin payload and return captured stdout."""
+        import io
+
+        if stdin_payload is None:
+            mock = io.StringIO("")
+            mock.isatty = lambda: True  # type: ignore[method-assign]
+        else:
+            mock = io.StringIO(json.dumps(stdin_payload))
+            mock.isatty = lambda: False  # type: ignore[method-assign]
+        with patch("sys.stdin", mock):
+            roadrunner.cmd_session_start(argparse.Namespace())
+        return capsys.readouterr().out
+
+    def test_session_id_captured_from_stdin(self, tmp_project, capsys):
+        # Core happy path. Claude Code sends a JSON payload with session_id;
+        # SessionStart persists it so a later `resume --session-id` finds it.
+        self._run_session_start({"session_id": "claude-session-abc123"}, capsys)
+        state = roadrunner.read_state()
+        assert state["last_session_id"] == "claude-session-abc123"
+
+    def test_session_id_capture_missing_field_preserves_prior(self, tmp_project, capsys):
+        # If the payload lacks session_id (older Claude Code or hook payload
+        # schema change), we must NOT clobber a previously-captured ID.
+        roadrunner.write_state(None, 0, last_session_id="prior-session-id")
+        self._run_session_start({"stop_hook_active": False}, capsys)
+        state = roadrunner.read_state()
+        assert state["last_session_id"] == "prior-session-id"
+
+    def test_session_id_capture_malformed_stdin_preserves_prior(self, tmp_project, capsys):
+        # Malformed JSON must never crash the hook (SessionStart is purely
+        # informational and exits 0). Prior value preserved.
+        roadrunner.write_state(None, 0, last_session_id="prior-session-id")
+        import io
+
+        mock = io.StringIO("{not json!!")
+        mock.isatty = lambda: False  # type: ignore[method-assign]
+        with patch("sys.stdin", mock):
+            roadrunner.cmd_session_start(argparse.Namespace())
+        capsys.readouterr()  # drain
+        state = roadrunner.read_state()
+        assert state["last_session_id"] == "prior-session-id"
+
+    def test_session_id_capture_empty_string_ignored(self, tmp_project, capsys):
+        # `session_id: ""` shouldn't be persisted — it's not a usable resume
+        # target. Same preserve-prior behavior as missing field.
+        roadrunner.write_state(None, 0, last_session_id="prior-session-id")
+        self._run_session_start({"session_id": "   "}, capsys)
+        state = roadrunner.read_state()
+        assert state["last_session_id"] == "prior-session-id"
+
+    def test_session_id_capture_no_stdin_when_tty(self, tmp_project, capsys):
+        # Manual `roadrunner session-start` from a terminal (no piped stdin)
+        # must not block on stdin.read(). We detect via isatty() and skip.
+        roadrunner.write_state(None, 0, last_session_id="prior-session-id")
+        self._run_session_start(None, capsys)
+        state = roadrunner.read_state()
+        assert state["last_session_id"] == "prior-session-id"
+
+    def test_check_stop_does_not_clear_session_id(self, tmp_project):
+        # check-stop fires many times per session — it must not zero out
+        # last_session_id on each fire. Same preserve-or-override contract
+        # that protects session_cost_usd applies here.
+        roadrunner.write_state(None, 0, last_session_id="should-survive")
+        args = type(
+            "Args",
+            (),
+            {
+                "max_iterations": "100",
+                "max_attempts": "5",
+                "max_budget_usd": None,
+            },
+        )()
+        import io
+
+        with patch("sys.stdin") as mock_stdin, patch("sys.stdout", io.StringIO()):
+            mock_stdin.read.return_value = json.dumps({"stop_hook_active": False, "last_assistant_message": ""})
+            try:
+                roadrunner.cmd_check_stop(args)
+            except SystemExit:
+                pass
+        state = roadrunner.read_state()
+        assert state["last_session_id"] == "should-survive"
+
+    def test_reset_iteration_soft_does_not_clear_session_id(self, tmp_project):
+        # reset-iteration clears session_iteration and session_cost_usd by
+        # design (new session window). last_session_id is orthogonal — it's
+        # the *previous* session pointer and must survive the reset so
+        # `resume --session-id` still has a target.
+        roadrunner.write_state(None, 5, session_iteration=10, session_cost_usd=3.0, last_session_id="prev-id")
+        roadrunner.cmd_reset_iteration(type("Args", (), {"soft": True, "hard": False})())
+        state = roadrunner.read_state()
+        assert state["last_session_id"] == "prev-id"
+        assert state["session_iteration"] == 0
+        assert state["session_cost_usd"] == 0.0
+
+    def test_resume_session_id_prints_claude_command(self, tmp_project, capsys):
+        # The headline use case: print the paste-able command.
+        roadrunner.write_state(None, 0, last_session_id="abc-123-def")
+        args = argparse.Namespace(session_id=True, exec_=False)
+        roadrunner.cmd_resume(args)
+        out = capsys.readouterr().out
+        assert out.strip() == "claude --resume abc-123-def"
+
+    def test_resume_session_id_helpful_message_when_unrecorded(self, tmp_project, capsys):
+        # Pre-capture (or after wipe). Operator must get an actionable
+        # message rather than a cryptic crash or silent success.
+        roadrunner.write_state(None, 0)  # no last_session_id
+        args = argparse.Namespace(session_id=True, exec_=False)
+        with pytest.raises(SystemExit) as exc:
+            roadrunner.cmd_resume(args)
+        assert exc.value.code == 1
+        err = capsys.readouterr().err
+        assert "No Claude Code session ID" in err
+
+    def test_resume_no_flags_preserves_pause_toggle(self, tmp_project, capsys):
+        # Existing operators rely on `roadrunner resume` (no flags) to clear
+        # the pause marker. The --session-id overload must not regress that.
+        (roadrunner.ROOT / ".roadrunner_paused").touch()
+        args = argparse.Namespace(session_id=False, exec_=False)
+        roadrunner.cmd_resume(args)
+        assert not (roadrunner.ROOT / ".roadrunner_paused").exists()
+        assert "resumed" in capsys.readouterr().out.lower()
+
+    def test_status_displays_last_session_id(self, tmp_project, capsys):
+        # The operator should be able to see at a glance whether resume
+        # --session-id has a target without having to cat the state file.
+        roadrunner.write_state(None, 0, last_session_id="visible-in-status-xyz")
+        roadrunner.cmd_status(argparse.Namespace())
+        out = capsys.readouterr().out
+        assert "visible-in-status-xyz" in out
+        assert "Last Claude session" in out
+
+    def test_status_omits_session_line_when_unrecorded(self, tmp_project, capsys):
+        # Don't clutter fresh-install output. The line only appears once a
+        # SessionStart has actually captured something.
+        roadrunner.write_state(None, 0)
+        roadrunner.cmd_status(argparse.Namespace())
+        out = capsys.readouterr().out
+        assert "Last Claude session" not in out
+
+
 # ── Eligibility ──────────────────────────────────────────────────────────────
 
 
@@ -271,14 +754,10 @@ class TestCompletionSignal:
         assert roadrunner.is_completion_signal("  ROADMAP_COMPLETE  ")
 
     def test_substring_no_match(self):
-        assert not roadrunner.is_completion_signal(
-            "Quote: ROADMAP_COMPLETE in the middle"
-        )
+        assert not roadrunner.is_completion_signal("Quote: ROADMAP_COMPLETE in the middle")
 
     def test_mid_message_no_match(self):
-        assert not roadrunner.is_completion_signal(
-            "ROADMAP_COMPLETE\nbut then more text"
-        )
+        assert not roadrunner.is_completion_signal("ROADMAP_COMPLETE\nbut then more text")
 
     def test_empty_string(self):
         assert not roadrunner.is_completion_signal("")
@@ -337,9 +816,7 @@ class TestAtomicSave:
     def test_no_tmp_left(self, tmp_project):
         tasks = roadrunner.load_tasks()
         roadrunner.save_tasks(tasks)
-        tmp_file = roadrunner.TASKS_FILE.with_suffix(
-            roadrunner.TASKS_FILE.suffix + ".tmp"
-        )
+        tmp_file = roadrunner.TASKS_FILE.with_suffix(roadrunner.TASKS_FILE.suffix + ".tmp")
         assert not tmp_file.exists()
 
     def test_schema_validation_on_load(self, tmp_project):
@@ -367,7 +844,7 @@ class TestAtomicSave:
         # during save_tasks must not rotate the backup chain, so a transient
         # bug can't slowly evict good backups by triggering repeated failures.
         tasks = roadrunner.load_tasks()
-        roadrunner.save_tasks(tasks)                        # produces .bak
+        roadrunner.save_tasks(tasks)  # produces .bak
         original_bak_bytes = roadrunner.TASKS_BACKUP.read_bytes()
 
         def boom(*args, **kwargs):
@@ -460,8 +937,12 @@ class TestRunValidation:
             mock_run.return_value = subprocess.CompletedProcess("true", 0, stdout="", stderr="")
             roadrunner.run_validation(task)
         mock_run.assert_called_once_with(
-            "true", shell=True, capture_output=True, text=True,
-            cwd=roadrunner.ROOT, timeout=42,
+            "true",
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=roadrunner.ROOT,
+            timeout=42,
         )
 
 
@@ -484,6 +965,8 @@ class TestCorruptInput:
             "current_task_id": None,
             "iteration": 0,
             "session_iteration": 0,  # ROAD-010
+            "session_cost_usd": 0.0,  # ROAD-011
+            "last_session_id": None,  # ROAD-014
             "attempts_per_task": {},
         }
         assert "state file unreadable" in capsys.readouterr().err
@@ -501,10 +984,14 @@ class TestCheckStop:
     """Test cmd_check_stop by calling it with mocked stdin."""
 
     def _run_check_stop(self, tmp_project, stdin_payload, max_iter="50", max_attempts="5"):
-        args = type("Args", (), {
-            "max_iterations": max_iter,
-            "max_attempts": max_attempts,
-        })()
+        args = type(
+            "Args",
+            (),
+            {
+                "max_iterations": max_iter,
+                "max_attempts": max_attempts,
+            },
+        )()
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = json.dumps(stdin_payload)
             try:
@@ -514,11 +1001,16 @@ class TestCheckStop:
         return self._last_stdout
 
     def _capture_check_stop(self, tmp_project, stdin_payload, max_iter="50", max_attempts="5"):
-        args = type("Args", (), {
-            "max_iterations": max_iter,
-            "max_attempts": max_attempts,
-        })()
+        args = type(
+            "Args",
+            (),
+            {
+                "max_iterations": max_iter,
+                "max_attempts": max_attempts,
+            },
+        )()
         import io
+
         captured = io.StringIO()
         with patch("sys.stdin") as mock_stdin, patch("sys.stdout", captured):
             mock_stdin.read.return_value = json.dumps(stdin_payload)
@@ -536,9 +1028,7 @@ class TestCheckStop:
         'loop stops after every task or two' failure mode seen on the external
         entra-triage pilot."""
         roadrunner.write_state(None, 0)
-        result = self._capture_check_stop(
-            tmp_project, {"stop_hook_active": True, "last_assistant_message": "test"}
-        )
+        result = self._capture_check_stop(tmp_project, {"stop_hook_active": True, "last_assistant_message": "test"})
         assert result is not None, "hook should keep driving when work remains"
         assert result.get("decision") == "block"
         assert "TASK-002" in result.get("reason", ""), "should inject next-task brief"
@@ -552,9 +1042,7 @@ class TestCheckStop:
             t["status"] = "done"
         roadrunner.save_tasks(tasks)
         roadrunner.write_state(None, 0)
-        result = self._capture_check_stop(
-            tmp_project, {"stop_hook_active": True, "last_assistant_message": "test"}
-        )
+        result = self._capture_check_stop(tmp_project, {"stop_hook_active": True, "last_assistant_message": "test"})
         assert result is None, "with no work remaining + hook-loop signal, allow stop"
 
     def test_completion_signal_allows_stop(self, tmp_project):
@@ -585,9 +1073,7 @@ class TestCheckStop:
         tasks[1]["status"] = "in_progress"
         roadrunner.save_tasks(tasks)
         roadrunner.write_state("TASK-002", 1)
-        result = self._capture_check_stop(
-            tmp_project, {"stop_hook_active": False, "last_assistant_message": "working"}
-        )
+        result = self._capture_check_stop(tmp_project, {"stop_hook_active": False, "last_assistant_message": "working"})
         assert "RESUME IN-PROGRESS" in result["reason"]
         assert "TASK-002" in result["reason"]
 
@@ -597,18 +1083,14 @@ class TestCheckStop:
         for t in tasks:
             t["status"] = "done"
         roadrunner.save_tasks(tasks)
-        result = self._capture_check_stop(
-            tmp_project, {"stop_hook_active": False, "last_assistant_message": "idle"}
-        )
+        result = self._capture_check_stop(tmp_project, {"stop_hook_active": False, "last_assistant_message": "idle"})
         assert "All tasks complete" in result["reason"]
 
     def test_iteration_cap(self, tmp_project):
         # ROAD-010: cap gates on session_iteration, not lifetime iteration.
         # Set both so the test is explicit about which one trips the cap.
         roadrunner.write_state(None, 49, session_iteration=49)
-        result = self._capture_check_stop(
-            tmp_project, {"stop_hook_active": False, "last_assistant_message": ""}
-        )
+        result = self._capture_check_stop(tmp_project, {"stop_hook_active": False, "last_assistant_message": ""})
         assert result["continue"] is False
         assert "Max iterations" in result["stopReason"]
 
@@ -659,9 +1141,7 @@ class TestCheckStop:
         # ROAD-010: lifetime iteration increments AND session_iteration increments
         # on the same Stop fire. Fresh state → session starts at 0.
         roadrunner.write_state(None, 5)  # session_iteration defaults to 0 (fresh)
-        self._capture_check_stop(
-            tmp_project, {"stop_hook_active": False, "last_assistant_message": ""}
-        )
+        self._capture_check_stop(tmp_project, {"stop_hook_active": False, "last_assistant_message": ""})
         state = roadrunner.read_state()
         assert state["iteration"] == 6
         assert state["session_iteration"] == 1
@@ -675,10 +1155,203 @@ class TestCheckStop:
                 t["status"] = "todo"
         roadrunner.save_tasks(tasks)
         roadrunner.write_state(None, 0)
-        result = self._capture_check_stop(
-            tmp_project, {"stop_hook_active": False, "last_assistant_message": ""}
-        )
+        result = self._capture_check_stop(tmp_project, {"stop_hook_active": False, "last_assistant_message": ""})
         assert "Blocked" in result["reason"]
+
+    # ── ROAD-011: budget halt ────────────────────────────────────────────
+
+    def _capture_with_budget(self, tmp_project, stdin_payload, max_budget_usd, max_iter="50", max_attempts="5"):
+        """Variant of _capture_check_stop that exercises the --max-budget-usd
+        flag path so the env-var fallback can be tested independently."""
+        args = type(
+            "Args",
+            (),
+            {
+                "max_iterations": max_iter,
+                "max_attempts": max_attempts,
+                "max_budget_usd": max_budget_usd,
+            },
+        )()
+        import io
+
+        captured = io.StringIO()
+        with patch("sys.stdin") as mock_stdin, patch("sys.stdout", captured):
+            mock_stdin.read.return_value = json.dumps(stdin_payload)
+            try:
+                roadrunner.cmd_check_stop(args)
+            except SystemExit:
+                pass
+        output = captured.getvalue().strip()
+        return json.loads(output) if output else None
+
+    def test_budget_halt_fires_when_cost_exceeds_cap(self, tmp_project):
+        # Operator sets a $5 cap; Claude Code reports $5.50 this fire. Loop must
+        # hard-halt with the same shape as the iteration cap, AND a budget_exceeded
+        # trace event must land so observability can correlate the halt to spend.
+        roadrunner.write_state(None, 0)
+        result = self._capture_with_budget(
+            tmp_project,
+            {
+                "stop_hook_active": False,
+                "last_assistant_message": "working",
+                "total_cost_usd": 5.50,
+            },
+            max_budget_usd="5.00",
+        )
+        assert result is not None
+        assert result.get("continue") is False
+        assert "Budget cap" in result["stopReason"]
+        assert "$5.00" in result["stopReason"]
+        assert "$5.50" in result["stopReason"]
+
+        # Trace must include the budget_exceeded event so trace.jsonl readers
+        # can distinguish a budget halt from an iteration halt without reparsing
+        # stopReason text.
+        trace_lines = roadrunner.TRACE_LOG.read_text().splitlines()
+        events = [json.loads(line)["event"] for line in trace_lines if line]
+        assert "budget_exceeded" in events
+
+    def test_budget_halt_does_not_fire_under_cap(self, tmp_project):
+        # $4.99 vs $5.00 cap → keep driving. Verifies the gate is >= not >.
+        roadrunner.write_state(None, 0)
+        result = self._capture_with_budget(
+            tmp_project,
+            {
+                "stop_hook_active": False,
+                "last_assistant_message": "working",
+                "total_cost_usd": 4.99,
+            },
+            max_budget_usd="5.00",
+        )
+        # Should be a normal block-with-brief, not a hard halt.
+        assert result is not None
+        assert result.get("continue") is not False
+        assert result.get("decision") == "block"
+
+    def test_budget_disabled_when_unset(self, tmp_project):
+        # No --max-budget-usd, no ROADMAP_MAX_BUDGET_USD → feature is off even
+        # if a huge cost is reported. Belt-and-braces: an operator who hasn't
+        # opted in must never see the loop halt for cost reasons.
+        roadrunner.write_state(None, 0)
+        result = self._capture_with_budget(
+            tmp_project,
+            {
+                "stop_hook_active": False,
+                "last_assistant_message": "working",
+                "total_cost_usd": 999.99,
+            },
+            max_budget_usd=None,
+        )
+        assert result is not None
+        assert result.get("continue") is not False
+
+    def test_budget_no_op_when_cost_data_missing(self, tmp_project, capsys):
+        # Budget is configured but the Stop-hook payload has no cost field.
+        # Loop must keep running (no hard halt) and a one-time warning fires
+        # to stderr so the operator knows enforcement is degraded.
+        # Reset the module-level dedupe flag so the warning emits in this test
+        # regardless of test ordering.
+        roadrunner._cost_data_warning_emitted = False
+        roadrunner.write_state(None, 0)
+        result = self._capture_with_budget(
+            tmp_project,
+            {"stop_hook_active": False, "last_assistant_message": "working"},
+            max_budget_usd="5.00",
+        )
+        assert result is not None
+        assert result.get("continue") is not False
+        err = capsys.readouterr().err
+        assert "ROADMAP_MAX_BUDGET_USD" in err
+
+    def test_budget_env_var_honored_when_flag_absent(self, tmp_project, monkeypatch):
+        # The env var must be the fallback when the CLI flag is None — that's
+        # how hooks/stop_hook.sh will configure the budget in practice (env in,
+        # flag out is the iteration-cap precedent).
+        monkeypatch.setenv("ROADMAP_MAX_BUDGET_USD", "2.50")
+        roadrunner.write_state(None, 0)
+        result = self._capture_with_budget(
+            tmp_project,
+            {
+                "stop_hook_active": False,
+                "last_assistant_message": "working",
+                "total_cost_usd": 3.00,
+            },
+            max_budget_usd=None,
+        )
+        assert result is not None
+        assert result.get("continue") is False
+        assert "Budget cap" in result["stopReason"]
+
+    def test_budget_flag_overrides_env_var(self, tmp_project, monkeypatch):
+        # Env says $10, flag says $1 → flag wins, so $5 trips the halt.
+        # Inverse direction confirms the precedence isn't accidentally flipped.
+        monkeypatch.setenv("ROADMAP_MAX_BUDGET_USD", "10.00")
+        roadrunner.write_state(None, 0)
+        result = self._capture_with_budget(
+            tmp_project,
+            {
+                "stop_hook_active": False,
+                "last_assistant_message": "working",
+                "total_cost_usd": 5.00,
+            },
+            max_budget_usd="1.00",
+        )
+        assert result is not None
+        assert result.get("continue") is False
+        assert "$1.00" in result["stopReason"]
+
+    def test_session_cost_persists_when_payload_missing_field(self, tmp_project):
+        # First fire reports cost; second fire's payload has no cost field.
+        # The persisted session_cost_usd must NOT zero out — Claude Code's hook
+        # schema isn't stable, and forgetting prior cost on every fire would
+        # make the budget cap useless in practice.
+        roadrunner.write_state(None, 0)
+        self._capture_with_budget(
+            tmp_project,
+            {
+                "stop_hook_active": False,
+                "last_assistant_message": "working",
+                "total_cost_usd": 3.25,
+            },
+            max_budget_usd="100.00",
+        )
+        state = roadrunner.read_state()
+        assert state["session_cost_usd"] == pytest.approx(3.25)
+        # Second fire has no cost field — value must be preserved, not reset.
+        self._capture_with_budget(
+            tmp_project,
+            {"stop_hook_active": False, "last_assistant_message": "still working"},
+            max_budget_usd="100.00",
+        )
+        state = roadrunner.read_state()
+        assert state["session_cost_usd"] == pytest.approx(3.25)
+
+    def test_session_start_resets_session_cost(self, tmp_project):
+        # SessionStart is the canonical session boundary — cost must zero like
+        # session_iteration so a new run starts with the full budget allowance.
+        roadrunner.write_state(None, 5, session_iteration=3, session_cost_usd=12.34)
+        args = type("Args", (), {})()
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.read.return_value = ""
+            try:
+                roadrunner.cmd_session_start(args)
+            except SystemExit:
+                pass
+        state = roadrunner.read_state()
+        assert state["session_cost_usd"] == 0.0
+        assert state["session_iteration"] == 0  # ROAD-010 invariant preserved
+
+    def test_reset_iteration_soft_clears_session_cost(self, tmp_project):
+        # `reset-iteration --soft` is the documented escape hatch after a cap
+        # fire. If it didn't clear cost, the operator's "start fresh session"
+        # would still be over budget. Mirror the session_iteration semantics.
+        roadrunner.write_state(None, 10, session_iteration=99, session_cost_usd=20.0)
+        args = type("Args", (), {"soft": True, "hard": False})()
+        roadrunner.cmd_reset_iteration(args)
+        state = roadrunner.read_state()
+        assert state["session_cost_usd"] == 0.0
+        assert state["session_iteration"] == 0
+        assert state["iteration"] == 10  # lifetime preserved on --soft
 
 
 # ── ROAD-010: Session iteration counter + reset-iteration ────────────────────
@@ -697,15 +1370,18 @@ class TestSessionIteration:
     def _run_check_stop(self, max_iter, stdin_payload=None, max_attempts="5"):
         """Helper: run cmd_check_stop with a given max_iter and capture JSON."""
         import io
-        args = type("Args", (), {
-            "max_iterations": max_iter,
-            "max_attempts": max_attempts,
-        })()
+
+        args = type(
+            "Args",
+            (),
+            {
+                "max_iterations": max_iter,
+                "max_attempts": max_attempts,
+            },
+        )()
         captured = io.StringIO()
         with patch("sys.stdin") as mock_stdin, patch("sys.stdout", captured):
-            mock_stdin.read.return_value = json.dumps(
-                stdin_payload or {"stop_hook_active": False, "last_assistant_message": ""}
-            )
+            mock_stdin.read.return_value = json.dumps(stdin_payload or {"stop_hook_active": False, "last_assistant_message": ""})
             try:
                 roadrunner.cmd_check_stop(args)
             except SystemExit:
@@ -715,8 +1391,11 @@ class TestSessionIteration:
 
     # ── Schema + backward compat ─────────────────────────────────────────
 
-    def test_state_schema_version_is_two(self):
-        assert roadrunner.STATE_SCHEMA_VERSION == 2
+    def test_state_schema_version_is_current(self):
+        # ROAD-010 bumped to 2; ROAD-011 bumped to 3. Update this test (and the
+        # docs/configuration.md schema section) whenever the version bumps so
+        # we have a single canonical source of "what does HEAD persist?".
+        assert roadrunner.STATE_SCHEMA_VERSION == 3
 
     def test_roadmap_state_typeddict_has_session_iteration(self):
         # TypedDict `total=False` makes the field optional but the annotation
@@ -764,7 +1443,7 @@ class TestSessionIteration:
         roadrunner.write_state("TASK-002", 10, session_iteration=7)
         raw = json.loads(roadrunner.STATE_FILE.read_text())
         assert raw["session_iteration"] == 7
-        assert raw["schema_version"] == 2
+        assert raw["schema_version"] == roadrunner.STATE_SCHEMA_VERSION
 
     def test_write_state_preserves_session_iteration_when_not_set(self, tmp_project):
         # A caller that doesn't know about session_iteration (cmd_start, cmd_complete,
@@ -793,10 +1472,7 @@ class TestSessionIteration:
         result = self._run_check_stop(max_iter="10")
         # 0+1=1 < 10 → no cap fire; drive the loop
         assert result is not None
-        assert result.get("continue") is not False, (
-            "cap should NOT fire when session_iteration is below max; "
-            f"got {result}"
-        )
+        assert result.get("continue") is not False, f"cap should NOT fire when session_iteration is below max; got {result}"
         state = roadrunner.read_state()
         assert state["iteration"] == 501
         assert state["session_iteration"] == 1
@@ -819,12 +1495,11 @@ class TestSessionIteration:
         # One below 100 → cap fires on increment to 100
         roadrunner.write_state(None, 0, session_iteration=99)
         import io
+
         args = type("Args", (), {"max_iterations": None, "max_attempts": "5"})()
         captured = io.StringIO()
         with patch("sys.stdin") as mock_stdin, patch("sys.stdout", captured):
-            mock_stdin.read.return_value = json.dumps(
-                {"stop_hook_active": False, "last_assistant_message": ""}
-            )
+            mock_stdin.read.return_value = json.dumps({"stop_hook_active": False, "last_assistant_message": ""})
             try:
                 roadrunner.cmd_check_stop(args)
             except SystemExit:
@@ -843,6 +1518,7 @@ class TestSessionIteration:
         roadrunner.write_state("TASK-002", 250, session_iteration=42)
         # Call cmd_session_start with a stub args; swallow stdout (JSON hook output).
         import io
+
         captured = io.StringIO()
         with patch("sys.stdout", captured):
             try:
@@ -862,6 +1538,7 @@ class TestSessionIteration:
         roadrunner.TASKS_FILE.unlink()
         roadrunner.write_state(None, 10, session_iteration=5)
         import io
+
         captured = io.StringIO()
         with patch("sys.stdout", captured):
             try:
@@ -933,9 +1610,7 @@ class TestSessionIteration:
     def test_stop_hook_default_max_iterations_is_100(self):
         hook_path = Path(__file__).parent.parent / "hooks" / "stop_hook.sh"
         content = hook_path.read_text()
-        assert "ROADMAP_MAX_ITERATIONS:-100" in content, (
-            "hook default must be 100 per ROAD-010"
-        )
+        assert "ROADMAP_MAX_ITERATIONS:-100" in content, "hook default must be 100 per ROAD-010"
 
 
 # ── Trace logging ────────────────────────────────────────────────────────────
@@ -1018,6 +1693,8 @@ class TestErrorHandling:
             "current_task_id": None,
             "iteration": 0,
             "session_iteration": 0,  # ROAD-010
+            "session_cost_usd": 0.0,  # ROAD-011
+            "last_session_id": None,  # ROAD-014
             "attempts_per_task": {},
         }
         assert "not a JSON object" in capsys.readouterr().err
@@ -1137,7 +1814,8 @@ class TestGitBranching:
         # Branch should be deleted after successful merge
         exists = subprocess.run(
             ["git", "rev-parse", "--verify", "roadrunner/TASK-099"],
-            cwd=root, capture_output=True,
+            cwd=root,
+            capture_output=True,
         ).returncode
         assert exists != 0
 
@@ -1159,7 +1837,8 @@ class TestGitBranching:
         assert roadrunner.merge_task_branch("TASK-100", "main") is False
         exists = subprocess.run(
             ["git", "rev-parse", "--verify", "roadrunner/TASK-100"],
-            cwd=root, capture_output=True,
+            cwd=root,
+            capture_output=True,
         ).returncode
         assert exists == 0
         # Both the merge error AND the abort step must be in the trace log so
@@ -1183,16 +1862,19 @@ class TestPushOnComplete:
         subprocess.run(["git", "init", "--bare", "-q"], cwd=bare, check=True)
         subprocess.run(
             ["git", "remote", "add", "origin", str(bare)],
-            cwd=tmp_git_project, check=True,
+            cwd=tmp_git_project,
+            check=True,
         )
         subprocess.run(
             ["git", "push", "-q", "origin", "main"],
-            cwd=tmp_git_project, check=True,
+            cwd=tmp_git_project,
+            check=True,
         )
         return bare
 
     def _set_push_mode(self, mode):
         import yaml as _yaml
+
         data = _yaml.safe_load(roadrunner.TASKS_FILE.read_text()) or {}
         data["push_on_complete"] = mode
         roadrunner.TASKS_FILE.write_text(_yaml.safe_dump(data, sort_keys=False))
@@ -1212,7 +1894,8 @@ class TestPushOnComplete:
         # Origin main should NOT have the new commit
         origin_log = subprocess.run(
             ["git", "--git-dir", str(bare), "log", "main", "--oneline"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout
         assert "work on TASK-050" not in origin_log
 
@@ -1223,13 +1906,15 @@ class TestPushOnComplete:
         assert roadrunner.merge_task_branch("TASK-051", "main") is True
         origin_log = subprocess.run(
             ["git", "--git-dir", str(bare), "log", "main", "--oneline"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout
         assert "work on TASK-051" in origin_log
         # Task branch should NOT be on remote under 'base' mode
         origin_branches = subprocess.run(
             ["git", "--git-dir", str(bare), "branch", "--list"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout
         assert "roadrunner/TASK-051" not in origin_branches
 
@@ -1240,7 +1925,8 @@ class TestPushOnComplete:
         assert roadrunner.merge_task_branch("TASK-052", "main") is True
         origin_branches = subprocess.run(
             ["git", "--git-dir", str(bare), "branch", "--list"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout
         assert "roadrunner/TASK-052" in origin_branches
 
@@ -1259,7 +1945,8 @@ class TestPushOnComplete:
         assert roadrunner.merge_task_branch("TASK-054", "main") is True
         origin_log = subprocess.run(
             ["git", "--git-dir", str(bare), "log", "main", "--oneline"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         ).stdout
         assert "work on TASK-054" not in origin_log
 
@@ -1279,9 +1966,7 @@ class TestCommitScopeAware:
             return exc.code if isinstance(exc.code, int) else 0
 
     def _last_commit_subject(self, root):
-        out = subprocess.run(
-            ["git", "log", "-1", "--pretty=%s"], cwd=root, capture_output=True, text=True
-        )
+        out = subprocess.run(["git", "log", "-1", "--pretty=%s"], cwd=root, capture_output=True, text=True)
         return out.stdout.strip()
 
     def test_commits_in_scope_files_only(self, tmg_with_task):
@@ -1297,7 +1982,7 @@ class TestCommitScopeAware:
 
     def test_refuses_out_of_scope_dirty_files(self, tmg_with_task, capsys):
         root, task_id = tmg_with_task
-        (root / "a.py").write_text("print('a')\n")        # in scope
+        (root / "a.py").write_text("print('a')\n")  # in scope
         (root / "secret.env").write_text("API_KEY=...\n")  # OUT of scope
         rc = self._run_commit(task_id)
         assert rc != 0
@@ -1305,9 +1990,7 @@ class TestCommitScopeAware:
         assert "secret.env" in err
         assert "out-of-scope" in err.lower() or "out of scope" in err.lower()
         # The in-scope file must NOT be committed (nothing staged on refusal).
-        status = subprocess.run(
-            ["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True
-        ).stdout
+        status = subprocess.run(["git", "status", "--porcelain"], cwd=root, capture_output=True, text=True).stdout
         assert "a.py" in status, "in-scope file should remain uncommitted when refused"
 
     def test_no_dirty_files_is_noop(self, tmg_with_task, capsys):
@@ -1336,9 +2019,7 @@ class TestCommitScopeAware:
         (root / "a.py").write_text("x = 1\n")
         rc = self._run_commit(task_id, notes="fixes ABC-123 per review")
         assert rc == 0
-        body = subprocess.run(
-            ["git", "log", "-1", "--pretty=%B"], cwd=root, capture_output=True, text=True
-        ).stdout
+        body = subprocess.run(["git", "log", "-1", "--pretty=%B"], cwd=root, capture_output=True, text=True).stdout
         assert "fixes ABC-123 per review" in body
 
     def test_unknown_task_id_errors(self, tmg_with_task, capsys):
@@ -1365,7 +2046,8 @@ def tmg_with_task(tmp_git_project):
     subprocess.run(["git", "add", "tasks/", "logs/"], cwd=tmp_git_project, check=True)
     subprocess.run(
         ["git", "commit", "-q", "-m", "baseline roadrunner scaffold"],
-        cwd=tmp_git_project, check=True,
+        cwd=tmp_git_project,
+        check=True,
     )
     return tmp_git_project, "TASK-002"
 
@@ -1379,6 +2061,7 @@ class TestProjectBase:
         # tmp_project writes tasks.yaml without project_base; fallback kicks in.
         # Rewrite it with an explicit project_base key.
         import yaml as _yaml
+
         existing = _yaml.safe_load(roadrunner.TASKS_FILE.read_text())
         existing["project_base"] = "develop"
         roadrunner.TASKS_FILE.write_text(_yaml.safe_dump(existing, sort_keys=False))
@@ -1400,8 +2083,7 @@ class TestProjectBase:
         # Create the next task branch with explicit base=main — it must NOT
         # include prev.txt (i.e., must branch from main, not from HEAD).
         assert roadrunner.create_task_branch("TASK-NEXT", base_branch="main") is True
-        assert not (root / "prev.txt").exists(), \
-            "TASK-NEXT must fork from main; prev.txt from TASK-PREV must be absent"
+        assert not (root / "prev.txt").exists(), "TASK-NEXT must fork from main; prev.txt from TASK-PREV must be absent"
 
 
 class TestCompleteClearsState:
@@ -1410,9 +2092,7 @@ class TestCompleteClearsState:
 
     def test_complete_nulls_current_task_id(self, tmp_git_project):
         # Seed state as if a task had been started
-        roadrunner.write_state(
-            "TASK-002", 3, {"TASK-002": 1}, extra={"base_branch": "main"}
-        )
+        roadrunner.write_state("TASK-002", 3, {"TASK-002": 1}, extra={"base_branch": "main"})
         # Sanity check the seed
         assert roadrunner.read_state().get("current_task_id") == "TASK-002"
 
@@ -1442,9 +2122,7 @@ class TestStateSchemaVersion:
     def test_legacy_state_without_version_reads_as_v1(self, tmp_project):
         # A state file from an older roadrunner (no schema_version field) must
         # still be readable — treated as v1 for backward compatibility.
-        roadrunner.STATE_FILE.write_text(
-            json.dumps({"current_task_id": "TASK-002", "iteration": 7, "attempts_per_task": {}})
-        )
+        roadrunner.STATE_FILE.write_text(json.dumps({"current_task_id": "TASK-002", "iteration": 7, "attempts_per_task": {}}))
         state = roadrunner.read_state()
         assert state["current_task_id"] == "TASK-002"
         assert state["iteration"] == 7
@@ -1498,10 +2176,7 @@ class TestCheckStopLock:
         t2.join()
 
         final = roadrunner.read_state()
-        assert final["iteration"] == 2, (
-            f"expected both bumps to land; got iteration={final['iteration']} "
-            "(lost-update race likely)"
-        )
+        assert final["iteration"] == 2, f"expected both bumps to land; got iteration={final['iteration']} (lost-update race likely)"
 
 
 # ── UTF-8 preservation (M4) ──────────────────────────────────────────────────
@@ -1610,10 +2285,7 @@ class TestWatch:
         assert [e["event"] for e in events] == ["a", "b", "c"]
 
     def test_tail_trace_events_caps_at_n(self, tmp_project):
-        lines = [
-            f'{{"ts":"2026-04-25T01:00:0{i}+00:00","event":"e{i}","task_id":null}}\n'
-            for i in range(8)
-        ]
+        lines = [f'{{"ts":"2026-04-25T01:00:0{i}+00:00","event":"e{i}","task_id":null}}\n' for i in range(8)]
         roadrunner.TRACE_LOG.write_text("".join(lines))
         events = roadrunner._tail_trace_events(3)
         assert len(events) == 3
@@ -1627,9 +2299,7 @@ class TestWatch:
                 t["status"] = "in_progress"
         roadrunner.save_tasks(tasks)
         roadrunner.write_state("TASK-002", iteration=42, attempts={"TASK-002": 2})
-        roadrunner.TRACE_LOG.write_text(
-            '{"ts":"2026-04-25T00:00:00+00:00","event":"task_start","task_id":"TASK-002"}\n'
-        )
+        roadrunner.TRACE_LOG.write_text('{"ts":"2026-04-25T00:00:00+00:00","event":"task_start","task_id":"TASK-002"}\n')
 
         frame = roadrunner._render_watch_frame(max_iter=100)
 
@@ -1655,6 +2325,7 @@ class TestWatch:
 
     def test_format_elapsed_hms(self):
         from datetime import timezone as _tz
+
         start = roadrunner.datetime(2026, 4, 25, 0, 0, 0, tzinfo=_tz.utc)
         now = roadrunner.datetime(2026, 4, 25, 1, 23, 45, tzinfo=_tz.utc)
         assert roadrunner._format_elapsed(start, now) == "01:23:45"
@@ -1666,6 +2337,7 @@ class TestWatch:
         import signal as _signal
         import time as _time
         import os as _os
+
         _src = str(Path(__file__).resolve().parent.parent / "src")
         _env = {**_os.environ}
         _env["PYTHONPATH"] = _src + (_os.pathsep + _env["PYTHONPATH"] if _env.get("PYTHONPATH") else "")

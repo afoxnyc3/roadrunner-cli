@@ -400,3 +400,256 @@ tasks:
     no coordination needed as it reads state via setdefault-based migration.
 
     '
+- id: ROAD-011
+  title: "Token / cost budget halt \u2014 ROADMAP_MAX_BUDGET_USD"
+  status: done
+  depends_on: []
+  goal: 'Roadrunner caps session iterations but not session cost; two tasks that each
+    take
+
+    50 iterations can differ 10x in dollars depending on tool-use density and model
+
+    choice. Operators running overnight loops have no upper bound on cost.
+
+
+    Add a ROADMAP_MAX_BUDGET_USD env var (and matching --max-budget-usd flag on
+
+    ''roadrunner check-stop''). Track per-session cost in .roadmap_state.json (new
+
+    field session_cost_usd, schema bump v2 -> v3). cmd_check_stop evaluates the
+
+    budget alongside the iteration cap and emits the same hard-halt JSON shape on
+
+    overrun. Surface current spend + budget in ''roadrunner status'' and ''roadrunner
+
+    health''. Record a ''budget_exceeded'' trace event on halt.
+
+
+    Cost data comes from Claude Code''s per-turn session metadata; if the data isn''t
+
+    surfaced reliably, gate the feature behind a config flag that defaults off and
+
+    emits a one-time warning rather than breaking the loop.
+
+    '
+  acceptance_criteria:
+  - ROADMAP_MAX_BUDGET_USD env var honored by check-stop
+  - --max-budget-usd flag on check-stop overrides the env var
+  - .roadmap_state.json schema bumped to v3 with session_cost_usd field
+  - Schema migration v2 -> v3 fills session_cost_usd with 0.0 for existing state files
+  - "Budget overrun returns {\"continue\": false, \"stopReason\": \"...\"} \u2014\
+    \ same hard-halt shape as the iteration cap"
+  - roadrunner status and roadrunner health surface current spend + budget
+  - Trace event budget_exceeded recorded on halt
+  - If per-turn cost data is unavailable, feature gracefully no-ops with a one-time
+    warning
+  - tests/test_roadrunner.py::TestCheckStop covers the budget-halt path
+  - docs/configuration.md documents the new env var and state field
+  - All existing tests continue to pass
+  - ruff check and mypy pass
+  validation_commands:
+  - python3 -m roadrunner check-stop --help
+  - grep -qE "ROADMAP_MAX_BUDGET_USD|max_budget_usd" src/roadrunner/cli.py src/roadrunner/state.py
+  - grep -q "session_cost_usd" src/roadrunner/state.py
+  - grep -q "STATE_SCHEMA_VERSION = 3" src/roadrunner/state.py
+  - grep -q "ROADMAP_MAX_BUDGET_USD" docs/configuration.md
+  - python3 -m pytest tests/ -q
+  - ruff check src/roadrunner tests/ hooks/
+  - python3 -m mypy src/roadrunner --ignore-missing-imports
+  documentation_targets:
+  - CHANGELOG.md
+  - docs/configuration.md
+  - logs/ROAD-011.md
+  files_expected:
+  - src/roadrunner/cli.py
+  - src/roadrunner/state.py
+  - docs/configuration.md
+  - tests/test_roadrunner.py
+  notes: 'Bundles the .roadmap_state.json v2 -> v3 schema bump because ROAD-014 also
+    needs it; that task depends on ROAD-011 so the migration lands once. Source: docs/v1.1-enhancement-issues.md
+    issue #2.
+
+    '
+- id: ROAD-012
+  title: Per-task model selection
+  status: done
+  depends_on: []
+  goal: 'Some tasks (''rename a variable across 12 files'') deserve Haiku; others
+    (''design
+
+    and implement the schema migration'') deserve Opus. Today Roadrunner relies on
+    the
+
+    operator setting ''claude --model'' globally; there is no way to vary by task.
+
+
+    Add an optional ''model:'' field (free-form string) to the tasks.yaml schema.
+
+    Validate against known model IDs at load time with a WARNING rather than an error
+
+    so the schema stays forward-compatible. Surface the chosen model in ''roadrunner
+
+    status'' and in the resume / next-task brief written by the Stop hook so the agent
+
+    knows it was downshifted or upshifted. Include the field in every check_stop
+
+    trace.jsonl event for the active task so future analysis can correlate model
+
+    choice to outcome. Extend ''roadrunner analyze'' to report task count by model.
+
+
+    This is documentation + telemetry; it does not change the runtime. Operators
+
+    who want to enforce the choice wrap ''claude'' in a script that reads the field.
+
+    '
+  acceptance_criteria:
+  - Optional model field added to the tasks.yaml schema in docs/configuration.md
+  - Field surfaced in roadrunner status and the resume / next-task brief
+  - trace.jsonl check_stop events include the model field on the active task
+  - roadrunner analyze reports task count grouped by model
+  - Schema validator warns (not errors) on unknown model IDs
+  - Unit test test_tasks_yaml_model_field covers parsing and brief rendering
+  - All existing tests continue to pass
+  - ruff check and mypy pass
+  validation_commands:
+  - grep -q "^### .*model\|^| .model" docs/configuration.md || grep -q "model" docs/configuration.md
+  - python3 -m roadrunner analyze
+  - python3 -m pytest tests/ -q -k "model_field or tasks_yaml"
+  - python3 -m pytest tests/ -q
+  - ruff check src/roadrunner tests/
+  - python3 -m mypy src/roadrunner --ignore-missing-imports
+  documentation_targets:
+  - CHANGELOG.md
+  - docs/configuration.md
+  - logs/ROAD-012.md
+  files_expected:
+  - src/roadrunner/cli.py
+  - docs/configuration.md
+  - tests/test_roadrunner.py
+  notes: "Source: docs/v1.1-enhancement-issues.md issue #5. Keep the validator a warning,\
+    \ not an error, so an unrecognized model ID in tasks.yaml never blocks the loop\
+    \ \u2014 forward compatibility matters more than strict validation here.\n"
+- id: ROAD-013
+  title: Append-only operator learnings log
+  status: done
+  depends_on: []
+  goal: 'Roadrunner has trace.jsonl (structured machine log) and per-task work logs
+    but no
+
+    ''things you wish the agent had known from the start'' artifact. Ralph''s
+
+    AGENTS.md is a load-bearing artifact: the agent appends operational learnings
+
+    (e.g. ''build command is npm run build, not npm build'') that the next iteration
+
+    consults.
+
+
+    Add logs/learnings.md as a designated append-only file with a header
+
+    paragraph explaining its purpose. Update CLAUDE.md under Context Hygiene to
+
+    instruct the agent to append a one-line entry whenever it discovers a non-obvious
+
+    project fact during a task. Have the SessionStart hook read the last 20 lines
+    and
+
+    include them in additionalContext so they persist across session boundaries.
+
+    Surface the learnings count in ''roadrunner status''. Scaffold the file in new
+
+    projects via ''roadrunner init''. Document the pattern in docs/WORKFLOW.md.
+
+
+    Zero code complexity: an instruction + a small SessionStart edit + an init
+
+    scaffold change. The value is cumulative.
+
+    '
+  acceptance_criteria:
+  - logs/learnings.md exists with a one-paragraph header explaining its purpose
+  - CLAUDE.md updated with the appending instruction under Context Hygiene
+  - SessionStart hook reads the last 20 lines of logs/learnings.md and includes them
+    in additionalContext
+  - roadrunner status shows the count of learnings entries
+  - roadrunner init scaffolds logs/learnings.md in new projects
+  - docs/WORKFLOW.md has a brief section on the learnings log
+  - All existing tests continue to pass
+  - ruff check passes
+  validation_commands:
+  - test -f logs/learnings.md
+  - grep -qi "learnings" CLAUDE.md
+  - grep -qi "learnings" docs/WORKFLOW.md
+  - python3 -m roadrunner init /tmp/rr_learnings_smoke --dry-run
+  - python3 -m pytest tests/ -q
+  - ruff check src/roadrunner tests/ hooks/
+  documentation_targets:
+  - CHANGELOG.md
+  - CLAUDE.md
+  - docs/WORKFLOW.md
+  - logs/ROAD-013.md
+  files_expected:
+  - logs/learnings.md
+  - CLAUDE.md
+  - docs/WORKFLOW.md
+  - src/roadrunner/cli.py
+  - src/roadrunner/session.py
+  notes: 'Source: docs/v1.1-enhancement-issues.md issue #6. The init scaffold should
+    write a fresh learnings.md with the header paragraph, not copy the roadrunner
+    project''s own.
+
+    '
+- id: ROAD-014
+  title: "roadrunner resume \u2014 --session-id"
+  status: done
+  depends_on:
+  - ROAD-011
+  goal: "Claude Code supports session resumption via 'claude --resume <id>'. Roadrunner's\n\
+    resume today is 'Python re-reads disk state and injects a brief into the NEXT\n\
+    session.' Convenience win: if the operator crashed mid-task, let them pop back\n\
+    into the SAME Claude session that was running.\n\nCapture the Claude Code session\
+    \ ID from session metadata on every SessionStart hook\nfire; store it in .roadmap_state.json\
+    \ as last_session_id. The schema bump rides\nalong with ROAD-011's v2 -> v3 migration\
+    \ \u2014 do not bump the version a second time.\nAdd 'roadrunner resume --session-id'\
+    \ (no args = read from state) that prints the\n'claude --resume <id>' command\
+    \ for the operator to paste, and 'roadrunner resume\n--exec' that runs it directly.\
+    \ Graceful no-op + helpful message if no session ID\nis recorded yet. Display\
+    \ the last session ID in 'roadrunner status'.\n\nPure operator-ergonomics improvement;\
+    \ does not change loop semantics.\n"
+  acceptance_criteria:
+  - SessionStart hook records the current Claude Code session ID into .roadmap_state.json
+    as last_session_id
+  - Schema bump piggybacks on ROAD-011's v2 -> v3 migration (no second bump)
+  - roadrunner resume --session-id (no args) prints the claude --resume command
+  - roadrunner resume --exec runs claude --resume <id> directly
+  - Graceful no-op + helpful message if no session ID has been recorded yet
+  - roadrunner status displays the last session ID
+  - Unit test test_session_id_capture covers the SessionStart write
+  - All existing tests continue to pass
+  - ruff check and mypy pass
+  validation_commands:
+  - python3 -m roadrunner resume --help
+  - grep -q "last_session_id" src/roadrunner/state.py
+  - grep -qE "session-id|session_id" src/roadrunner/cli.py
+  - python3 -m pytest tests/ -q -k "session_id"
+  - python3 -m pytest tests/ -q
+  - ruff check src/roadrunner tests/ hooks/
+  - python3 -m mypy src/roadrunner --ignore-missing-imports
+  documentation_targets:
+  - CHANGELOG.md
+  - docs/configuration.md
+  - logs/ROAD-014.md
+  files_expected:
+  - src/roadrunner/cli.py
+  - src/roadrunner/state.py
+  - src/roadrunner/session.py
+  - hooks/sessionstart_hook.sh
+  - tests/test_roadrunner.py
+  notes: 'Source: docs/v1.1-enhancement-issues.md issue #8. Depends on ROAD-011 so
+    the v2 -> v3 schema bump happens exactly once and last_session_id rides along
+    with session_cost_usd. If the Claude Code session metadata does not expose the
+    session ID reliably, gate the SessionStart capture behind a defensive try/except
+    and emit a one-time warning.
+
+    '
