@@ -44,10 +44,12 @@ install:
 hooks:
     chmod +x hooks/*.sh
 
-# Run the full CI gate locally (pytest + ruff)
+# Run the full CI gate locally (pytest + ruff + mypy)
+# Scope matches .github/workflows/ci.yml exactly so green locally = green on push.
 ci:
     pytest tests/ -v
-    ruff check roadrunner.py hooks/ tests/
+    ruff check src/ hooks/ tests/
+    python3 -m mypy src tests --ignore-missing-imports
 
 # Run tests only
 test:
@@ -55,4 +57,4 @@ test:
 
 # Run lint only
 lint:
-    ruff check roadrunner.py hooks/ tests/
+    ruff check src/ hooks/ tests/

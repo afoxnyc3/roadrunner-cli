@@ -23,10 +23,10 @@ just hooks                       # chmod +x hooks/*.sh
 ## Local CI gate
 
 ```bash
-just ci                          # pytest + ruff — same gate CI runs
+just ci                          # pytest + ruff + mypy — same gate CI runs
 ```
 
-If `just ci` is green, the PR is ready. Ad-hoc runners: `just test`, `just lint`, `pytest tests/test_roadrunner.py::TestStart::test_creates_branch -v`. Auto-format with `ruff format src/ tests/ hooks/` (opt-in). `mypy src` for type-boundary changes.
+If `just ci` is green, the PR is ready — it runs the same `pytest`, `ruff`, and `mypy src tests --ignore-missing-imports` invocations the GitHub workflow does, so local-green and CI-green are the same gate. Ad-hoc runners: `just test`, `just lint`, `pytest tests/test_roadrunner.py::TestStart::test_creates_branch -v`. Auto-format with `ruff format src/ tests/ hooks/` (opt-in). Use `mypy src tests --ignore-missing-imports` directly when iterating on type-boundary changes — the narrower `mypy src` won't catch errors in test files (this gap shipped a real CI red on 2026-05-28).
 
 ---
 
