@@ -548,10 +548,10 @@ class TestSessionIdCapture:
 
         if stdin_payload is None:
             mock = io.StringIO("")
-            mock.isatty = lambda: True  # type: ignore[method-assign]
+            mock.isatty = lambda: True
         else:
             mock = io.StringIO(json.dumps(stdin_payload))
-            mock.isatty = lambda: False  # type: ignore[method-assign]
+            mock.isatty = lambda: False
         with patch("sys.stdin", mock):
             roadrunner.cmd_session_start(argparse.Namespace())
         return capsys.readouterr().out
@@ -578,7 +578,7 @@ class TestSessionIdCapture:
         import io
 
         mock = io.StringIO("{not json!!")
-        mock.isatty = lambda: False  # type: ignore[method-assign]
+        mock.isatty = lambda: False
         with patch("sys.stdin", mock):
             roadrunner.cmd_session_start(argparse.Namespace())
         capsys.readouterr()  # drain
