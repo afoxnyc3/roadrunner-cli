@@ -666,6 +666,51 @@ class TestSessionIdCapture:
         assert not (roadrunner.ROOT / ".roadrunner_paused").exists()
         assert "resumed" in capsys.readouterr().out.lower()
 
+    def test_resume_session_id_also_clears_pause_marker(self, tmp_project, capsys):
+        # Regression guard for the code-review finding: an operator who paused
+        # for ad-hoc work and then runs `resume --session-id` to retrieve the
+        # captured Claude session must NOT stay silently paused. The verb
+        # "resume" should resume the loop regardless of sub-mode.
+        (roadrunner.ROOT / ".roadrunner_paused").touch()
+        roadrunner.write_state(None, 0, last_session_id="captured-xyz")
+        args = argparse.Namespace(session_id=True, exec_=False)
+        roadrunner.cmd_resume(args)
+        captured = capsys.readouterr()
+        assert not (roadrunner.ROOT / ".roadrunner_paused").exists(), (
+            "resume --session-id must clear .roadrunner_paused so the loop is actually live when the operator reattaches"
+        )
+        # The resume command still prints on stdout (paste target).
+        assert captured.out.strip() == "claude --resume captured-xyz"
+        # The pause-cleared notice lands on stderr so it doesn't pollute the
+        # paste-able command.
+        assert "pause marker cleared" in captured.err
+
+    def test_resume_session_id_no_pause_no_notice(self, tmp_project, capsys):
+        # When the operator wasn't paused, --session-id must not print a
+        # confusing "pause cleared" notice — only the resume command.
+        assert not (roadrunner.ROOT / ".roadrunner_paused").exists()
+        roadrunner.write_state(None, 0, last_session_id="captured-xyz")
+        args = argparse.Namespace(session_id=True, exec_=False)
+        roadrunner.cmd_resume(args)
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "claude --resume captured-xyz"
+        assert "pause marker cleared" not in captured.err
+
+    def test_resume_session_id_error_path_still_clears_pause(self, tmp_project, capsys):
+        # If --session-id fails because no ID is captured, the pause clear
+        # has already happened — exit 1 must not leave the operator paused.
+        # Rationale: the operator's intent ("resume") doesn't depend on
+        # whether a session ID was available; the pause clear is the floor.
+        (roadrunner.ROOT / ".roadrunner_paused").touch()
+        roadrunner.write_state(None, 0)  # no last_session_id
+        args = argparse.Namespace(session_id=True, exec_=False)
+        with pytest.raises(SystemExit) as exc:
+            roadrunner.cmd_resume(args)
+        assert exc.value.code == 1
+        assert not (roadrunner.ROOT / ".roadrunner_paused").exists(), (
+            "the pause marker must be cleared even when --session-id has no captured target — resume's primary effect is loop re-engagement"
+        )
+
     def test_status_displays_last_session_id(self, tmp_project, capsys):
         # The operator should be able to see at a glance whether resume
         # --session-id has a target without having to cat the state file.

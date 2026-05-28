@@ -1210,16 +1210,25 @@ def cmd_pause(args: argparse.Namespace) -> None:
 
 
 def cmd_resume(args: argparse.Namespace) -> None:
-    # ROAD-014: overloaded subcommand.
+    # ROAD-014: overloaded subcommand. The verb "resume" always resumes the
+    # loop — the pause marker is cleared on every invocation regardless of
+    # flag. Sub-modes layer extra behavior:
     #
-    # Default (no flags): toggle off the .roadrunner_paused marker — original
-    #   pause/resume semantics for ad-hoc bypass of the Stop hook loop.
-    # --session-id: print the `claude --resume <id>` command for the operator
-    #   to paste, using the last_session_id captured by SessionStart.
-    # --exec: same lookup, but exec `claude --resume <id>` in place rather
-    #   than printing it. Useful when scripting recovery from a crash.
+    # Default (no flags): just clear the marker + print confirmation.
+    # --session-id: also print the `claude --resume <id>` command for the
+    #   operator to paste, using the last_session_id captured by SessionStart.
+    # --exec: also exec `claude --resume <id>` in place. Useful when scripting
+    #   recovery from a crash.
     want_session_id = bool(getattr(args, "session_id", False))
     want_exec = bool(getattr(args, "exec_", False))
+
+    # Clear the pause marker FIRST, before the flag branches can early-return
+    # or exec away. An operator who paused for ad-hoc work and then runs
+    # `resume --session-id` (or `--exec`) intends to resume; not unpausing
+    # leaves them silently dead-lined when they reattach to Claude.
+    paused_marker = ROOT / ".roadrunner_paused"
+    was_paused = paused_marker.exists()
+    paused_marker.unlink(missing_ok=True)
 
     if want_session_id or want_exec:
         state = read_state()
@@ -1233,6 +1242,10 @@ def cmd_resume(args: argparse.Namespace) -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+        if was_paused:
+            # Surface the side effect so operators who flipped pause earlier
+            # know it's been cleared by this invocation.
+            print("Roadrunner resumed (pause marker cleared).", file=sys.stderr)
         if want_exec:
             try:
                 os.execvp("claude", ["claude", "--resume", sid])
@@ -1245,7 +1258,6 @@ def cmd_resume(args: argparse.Namespace) -> None:
         print(f"claude --resume {sid}")
         return
 
-    (ROOT / ".roadrunner_paused").unlink(missing_ok=True)
     print("Roadrunner resumed. Loop active.")
 
 
