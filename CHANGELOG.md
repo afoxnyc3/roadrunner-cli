@@ -12,6 +12,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Project-wide baseline validation suite (ROAD-015)** — `tasks.yaml` accepts
+  an optional top-level `baseline_validation: list[str]` field. `roadrunner
+  validate` runs each command in this list before the active task's own
+  `validation_commands`, short-circuits on first failure (the task-specific
+  phase is skipped entirely if any baseline command fails), and continues on
+  failure within the task-specific phase. Each `ValidationResult` carries a
+  `phase` field (`baseline` / `task`); `validate` output renders the two
+  suites as distinct blocks; `validation_command` trace events carry the
+  phase, and `validation_complete` carries `baseline_passed` / `task_passed`
+  booleans. The runtime treats commands as opaque shell invocations, so the
+  field is **language-agnostic** — Python projects set pytest/ruff/mypy,
+  TypeScript projects set npm/eslint/tsc. This project's `tasks.yaml` is now
+  configured with the three CI-mirror commands, making local↔CI parity
+  structural rather than conventional (closes the 2026-05-28 drift incident).
+  See `docs/configuration.md` § Baseline validation. Backward-compat: when
+  the field is absent/empty/malformed, behavior is unchanged.
 - **`roadrunner resume --session-id` (ROAD-014)** — the SessionStart hook now
   captures Claude Code's `session_id` from the hook payload into
   `.roadmap_state.json` as `last_session_id`. The existing `roadrunner resume`

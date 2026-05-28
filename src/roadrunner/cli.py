@@ -82,6 +82,7 @@ class ValidationResult(TypedDict, total=False):
     stdout: str
     stderr: str
     timed_out: bool
+    phase: str  # ROAD-015: "baseline" or "task" — which suite the command ran in
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────
@@ -341,6 +342,27 @@ def load_project_config() -> dict:
     return {k: v for k, v in data.items() if k != "tasks"}
 
 
+def get_baseline_validation() -> list[str]:
+    """Read the optional top-level ``baseline_validation`` list from tasks.yaml.
+
+    Returns the list of shell commands that run before every task's own
+    ``validation_commands``. If the field is absent, empty, or malformed, returns
+    an empty list — backward compat for projects without a baseline.
+
+    The baseline is the project-wide CI-equivalent gate (ROAD-015): ``run_validation``
+    runs it first, short-circuits on first failure, and only then runs the task's
+    own commands. Set this to the exact invocations your CI workflow uses to make
+    the loop's validate gate structurally equal to CI. Intentionally language-
+    agnostic — Python projects set pytest/ruff/mypy; TypeScript projects set
+    npm test, eslint, npx tsc --noEmit; the runtime treats them as opaque shell
+    commands.
+    """
+    raw = load_project_config().get("baseline_validation")
+    if not isinstance(raw, list):
+        return []
+    return [str(c).strip() for c in raw if isinstance(c, str) and c.strip()]
+
+
 def get_project_base() -> str:
     """Resolve the base branch task branches should fork from.
 
@@ -598,19 +620,32 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
 
 
 def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
-    """Run all validation_commands for a task. Returns (passed, results)."""
+    """Run project baseline (if any), then the task's validation_commands.
+
+    ROAD-015: a project-wide ``baseline_validation`` list at the top of
+    tasks.yaml runs as a gate before each task's per-task commands. The
+    baseline short-circuits on first failure — if pytest in the baseline
+    fails, ruff/mypy/task-specific don't run. This is the structural
+    "local equals CI" guarantee: no task can reach ``complete`` if any
+    baseline command fails. Within task-specific commands the prior
+    continue-on-failure behavior is preserved so the operator still sees
+    every task-level failure at once.
+
+    Each ValidationResult carries a ``phase`` field (``baseline`` |
+    ``task``) so callers can render the two suites distinctly.
+    """
     import time
 
-    commands = task.get("validation_commands", [])
-    if not commands:
+    baseline = get_baseline_validation()
+    task_commands = task.get("validation_commands", [])
+    if not baseline and not task_commands:
         return True, []
 
     results: list[ValidationResult] = []
-    all_passed = True
     state = read_state()
     timeout = task.get("validation_timeout", DEFAULT_VALIDATION_TIMEOUT)
 
-    for cmd in commands:
+    def _run_one(cmd: str, phase: str) -> bool:
         t0 = time.monotonic()
         timed_out = False
         try:
@@ -633,14 +668,13 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
             stderr = (exc.stderr or b"").decode(errors="replace").strip()[:500]
             returncode = -1
         elapsed = (time.monotonic() - t0) * 1000
-        if not passed:
-            all_passed = False
         entry: ValidationResult = {
             "command": cmd,
             "passed": passed,
             "returncode": returncode,
             "stdout": stdout,
             "stderr": stderr,
+            "phase": phase,
         }
         if timed_out:
             entry["timed_out"] = True
@@ -652,13 +686,37 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
             command=cmd,
             exit_code=returncode,
             duration_ms=elapsed,
+            extra={"phase": phase},
         )
+        return passed
 
+    baseline_passed = True
+    # Phase 1: baseline — gate. First failure stops the rest of validation.
+    for cmd in baseline:
+        if not _run_one(cmd, "baseline"):
+            baseline_passed = False
+            break
+
+    # Phase 2: task-specific. Only runs if baseline passed (short-circuit
+    # semantics). Within this phase we continue on failure so the operator
+    # sees every task-level issue at once, matching the pre-ROAD-015 UX.
+    task_passed = True
+    if baseline_passed:
+        for cmd in task_commands:
+            if not _run_one(cmd, "task"):
+                task_passed = False
+
+    all_passed = baseline_passed and task_passed
     trace_event(
         "validation_complete",
         task_id=task["id"],
         iteration=state.get("iteration"),
-        extra={"passed": all_passed, "total": len(results)},
+        extra={
+            "passed": all_passed,
+            "total": len(results),
+            "baseline_passed": baseline_passed,
+            "task_passed": task_passed,
+        },
     )
     return all_passed, results
 
@@ -951,17 +1009,39 @@ def cmd_validate(args: argparse.Namespace) -> None:
 
     trace_event("validate_start", task_id=args.task_id)
     passed, results = run_validation(task)
+    # ROAD-015: split results into baseline/task suites so the operator can
+    # see at a glance which phase failed. Baseline failures are gate failures
+    # (CI parity violation); task-specific failures are scope-specific to the
+    # task. Same severity for exit code, different message.
+    baseline_results = [r for r in results if r.get("phase") == "baseline"]
+    task_results = [r for r in results if r.get("phase") == "task"]
+    baseline_passed = all(r["passed"] for r in baseline_results)
+
+    def _render(label: str, rows: list[ValidationResult]) -> None:
+        if not rows:
+            return
+        print(f"── {label} ──")
+        for r in rows:
+            icon = "✅" if r["passed"] else "❌"
+            print(f"{icon} {r['command']}")
+            if not r["passed"] and r["stderr"]:
+                print(f"   {r['stderr'][:200]}")
+
+    _render("baseline", baseline_results)
+    if baseline_results and not baseline_passed:
+        print("Baseline failed — task-specific commands were not run.")
+    _render("task", task_results)
+
     trace_event(
         "validate_end",
         task_id=args.task_id,
-        extra={"passed": passed, "total": len(results)},
+        extra={
+            "passed": passed,
+            "total": len(results),
+            "baseline_total": len(baseline_results),
+            "task_total": len(task_results),
+        },
     )
-    for r in results:
-        icon = "✅" if r["passed"] else "❌"
-        print(f"{icon} {r['command']}")
-        if not r["passed"] and r["stderr"]:
-            print(f"   {r['stderr'][:200]}")
-
     sys.exit(0 if passed else 1)
 
 

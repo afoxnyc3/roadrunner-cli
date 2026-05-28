@@ -425,3 +425,42 @@ Roadmap finished — ROADMAP_COMPLETE signal received.
 ## 2026-05-28T10:12:52.348505+00:00 | ALL → complete
 Roadmap finished — ROADMAP_COMPLETE signal received.
 
+## 2026-05-28T10:17:16.394913+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T10:22:04.276981+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T10:22:42.086764+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T10:25:30.023877+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T11:51:10.057571+00:00 | ROAD-015 → in_progress
+
+
+## 2026-05-28T11:53:16.308156+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T11:54:27.877078+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T11:55:13.596044+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T11:55:21.626813+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T11:56:32.630229+00:00 | ROAD-015 → blocked
+Auto-blocked after 5 attempts without completion.
+
+## 2026-05-28T11:56:32.742455+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T11:56:40.615997+00:00 | ALL → complete
+Roadmap finished — ROADMAP_COMPLETE signal received.
+
+## 2026-05-28T11:56:47.764918+00:00 | ROAD-015 → done
+Top-level baseline_validation list[str] in tasks.yaml gates every task before its own validation_commands; short-circuits on first failure; task phase continues-on-failure (preserves pre-ROAD-015 UX); ValidationResult gains phase field; cmd_validate renders baseline/task blocks separately; trace events carry phase and per-phase pass booleans. This project's tasks.yaml sets baseline to the three CI commands — local↔CI parity is now structural. Language-agnostic (TS example documented). 10 new tests, 236 total passing, ruff + mypy clean. Backward-compat preserved.
+

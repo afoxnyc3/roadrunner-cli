@@ -192,6 +192,57 @@ tasks:                      # required; the ordered task list
 | `project_base`     | string                   | optional  | Branch that `roadrunner/<TASK-ID>` branches fork from. Prevents stacking. Falls back to current branch, then `main`. |
 | `push_on_complete` | `"base"` / `"task"` / `"both"` / `"none"` | optional | What to push after a successful merge on `complete`. Default `"none"` (local only). |
 | `tasks`            | list                     | required  | Ordered task list. See field reference below.                                                                     |
+| `baseline_validation` | list[string]          | optional  | ROAD-015: project-wide validation gate. `roadrunner validate` runs every command here before any task's own `validation_commands`, short-circuiting on first failure. Set this to the exact commands your CI workflow runs so the loop's validate gate is structurally equal to CI. **Language-agnostic** — see the next section. |
+
+### Baseline validation (ROAD-015)
+
+`baseline_validation` is the project-wide CI-equivalent gate. `roadrunner validate`
+runs every command in this list **before** the active task's per-task
+`validation_commands`. If any baseline command fails, the rest of validation
+short-circuits — remaining baseline commands and all task-specific commands are
+skipped, and the task cannot reach `complete`. Within the task-specific phase,
+commands continue on failure so the operator still sees every task-level issue
+at once.
+
+The runtime treats each entry as an opaque shell command, so the field is
+**language-agnostic**:
+
+**Python project:**
+
+```yaml
+baseline_validation:
+  - python3 -m pytest tests/ -q
+  - ruff check src/ hooks/ tests/
+  - python3 -m mypy src tests --ignore-missing-imports
+```
+
+**TypeScript project:**
+
+```yaml
+baseline_validation:
+  - npm test
+  - npm run lint
+  - npx tsc --noEmit
+```
+
+When the field is absent, empty, or malformed (e.g. `baseline_validation: true`
+instead of a list), the helper returns `[]` and `validate` falls back to its
+pre-ROAD-015 behavior (task-specific commands only). This preserves backward
+compatibility for projects that haven't opted in.
+
+Trace events distinguish the two phases: every `validation_command` event
+carries a `phase: "baseline" | "task"` field, and `validation_complete` carries
+`baseline_passed` and `task_passed` booleans so external pipelines can attribute
+failures correctly. The CLI output renders the two suites as separate
+`── baseline ──` / `── task ──` blocks for the same reason.
+
+The motivation is **runtime enforcement of local↔CI parity**: CLAUDE.md
+conventions are suggestion-only and drift across long sessions; only code paths
+are deterministic. Without `baseline_validation`, an individual task's
+`validation_commands` can omit a check that CI runs (this happened on
+2026-05-28 — `mypy src/roadrunner` locally, `mypy src tests` in CI — and shipped
+two consecutive red CI runs). With `baseline_validation` set to CI's exact
+commands, that gap is structurally impossible.
 
 ### Per-task fields
 

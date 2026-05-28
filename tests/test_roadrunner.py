@@ -991,6 +991,142 @@ class TestRunValidation:
         )
 
 
+# ── ROAD-015: baseline_validation suite ──────────────────────────────────────
+
+
+class TestBaselineValidation:
+    """ROAD-015: top-level baseline_validation runs as a project-wide CI gate
+    before each task's own validation_commands.
+
+    Contract:
+      - tasks.yaml's top-level baseline_validation list is read by
+        get_baseline_validation()
+      - run_validation runs baseline FIRST, short-circuits on first failure
+      - task validation_commands run only if baseline passed
+      - within task_commands, all run regardless of prior failures (matches
+        pre-ROAD-015 UX so the operator sees every task-level issue at once)
+      - each ValidationResult carries a 'phase' field for renderers
+      - absent / empty / malformed baseline → no baseline runs (backward compat)
+    """
+
+    def _set_baseline(self, tmp_project, commands):
+        """Write a baseline_validation top-level block into tasks.yaml."""
+        with open(tmp_project / "tasks" / "tasks.yaml") as f:
+            data = yaml.safe_load(f)
+        if commands is None:
+            data.pop("baseline_validation", None)
+        else:
+            data["baseline_validation"] = commands
+        with open(tmp_project / "tasks" / "tasks.yaml", "w") as f:
+            yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+
+    def test_baseline_validation_absent_returns_empty(self, tmp_project):
+        # Default fixture tasks.yaml has no baseline_validation field.
+        # Backward compat: helper returns [], run_validation behaves as before.
+        self._set_baseline(tmp_project, None)
+        assert roadrunner.get_baseline_validation() == []
+
+    def test_baseline_validation_reads_list(self, tmp_project):
+        # Happy path: list of strings passes through verbatim.
+        self._set_baseline(tmp_project, ["true", "echo hi"])
+        assert roadrunner.get_baseline_validation() == ["true", "echo hi"]
+
+    def test_baseline_validation_filters_non_strings(self, tmp_project):
+        # Defensive parsing: a malformed entry (int, None, empty string) doesn't
+        # crash the helper. The runtime treats it as if the bad entry weren't
+        # there, so a typo in tasks.yaml degrades to "fewer baseline checks"
+        # rather than "loop wedged."
+        self._set_baseline(tmp_project, ["true", 42, None, "", "echo hi"])
+        assert roadrunner.get_baseline_validation() == ["true", "echo hi"]
+
+    def test_baseline_validation_non_list_returns_empty(self, tmp_project):
+        # Operator typos `baseline_validation: true` instead of a list →
+        # helper returns []. We don't want a string-as-shell-command surprise.
+        self._set_baseline(tmp_project, "not-a-list")
+        assert roadrunner.get_baseline_validation() == []
+
+    def test_run_validation_runs_baseline_before_task(self, tmp_project):
+        # Both suites pass; baseline commands appear FIRST in results so
+        # render order matches execution order. Phase field is set.
+        self._set_baseline(tmp_project, ["true"])
+        task = {"id": "T", "validation_commands": ["echo task-cmd"]}
+        roadrunner.write_state(None, 0)
+        passed, results = roadrunner.run_validation(task)
+        assert passed
+        assert len(results) == 2
+        assert results[0]["phase"] == "baseline"
+        assert results[1]["phase"] == "task"
+
+    def test_baseline_validation_short_circuits_on_first_failure(self, tmp_project):
+        # Baseline failure must stop the loop BEFORE task-specific commands
+        # run. This is the structural CI-parity guarantee: a project that
+        # would fail in CI cannot reach `complete` locally either.
+        self._set_baseline(tmp_project, ["true", "false", "true"])
+        task = {"id": "T", "validation_commands": ["echo should-not-run"]}
+        roadrunner.write_state(None, 0)
+        passed, results = roadrunner.run_validation(task)
+        assert not passed
+        # First baseline passed, second failed, third baseline + task commands
+        # never ran. We see exactly 2 baseline results, 0 task results.
+        baseline_results = [r for r in results if r.get("phase") == "baseline"]
+        task_results = [r for r in results if r.get("phase") == "task"]
+        assert len(baseline_results) == 2
+        assert baseline_results[0]["passed"] is True
+        assert baseline_results[1]["passed"] is False
+        assert task_results == []
+
+    def test_task_commands_continue_on_failure(self, tmp_project):
+        # Within the task phase, the pre-ROAD-015 "see all failures at once"
+        # UX is preserved — operator should still be able to spot multiple
+        # task-specific issues in one validate run.
+        self._set_baseline(tmp_project, [])
+        task = {"id": "T", "validation_commands": ["false", "true", "false"]}
+        roadrunner.write_state(None, 0)
+        passed, results = roadrunner.run_validation(task)
+        assert not passed
+        # All three task commands executed, despite the first failure.
+        assert [r["passed"] for r in results] == [False, True, False]
+        assert all(r["phase"] == "task" for r in results)
+
+    def test_empty_baseline_and_empty_commands_returns_passed(self, tmp_project):
+        # No baseline, no task commands → True, [] (matches pre-ROAD-015).
+        self._set_baseline(tmp_project, None)
+        task = {"id": "T", "validation_commands": []}
+        roadrunner.write_state(None, 0)
+        passed, results = roadrunner.run_validation(task)
+        assert passed
+        assert results == []
+
+    def test_baseline_only_passes_when_no_task_commands(self, tmp_project):
+        # Configuration where baseline exists but task has no commands: the
+        # baseline alone gates completion.
+        self._set_baseline(tmp_project, ["true", "true"])
+        task = {"id": "T", "validation_commands": []}
+        roadrunner.write_state(None, 0)
+        passed, results = roadrunner.run_validation(task)
+        assert passed
+        assert len(results) == 2
+        assert all(r["phase"] == "baseline" for r in results)
+
+    def test_baseline_validation_trace_includes_phase(self, tmp_project):
+        # trace.jsonl readers must be able to tell baseline failures apart
+        # from task failures without having to reparse the command string.
+        self._set_baseline(tmp_project, ["true"])
+        task = {"id": "T", "validation_commands": ["true"]}
+        roadrunner.write_state(None, 1)
+        roadrunner.run_validation(task)
+        trace_lines = roadrunner.TRACE_LOG.read_text().strip().splitlines()
+        events = [json.loads(line) for line in trace_lines]
+        cmd_events = [e for e in events if e["event"] == "validation_command"]
+        phases = [e.get("phase") for e in cmd_events]
+        assert phases == ["baseline", "task"]
+        # validation_complete event carries baseline_passed / task_passed split
+        complete = [e for e in events if e["event"] == "validation_complete"]
+        assert complete
+        assert complete[-1]["baseline_passed"] is True
+        assert complete[-1]["task_passed"] is True
+
+
 # ── Corrupt input ───────────────────────────────────────────────────────────
 
 
