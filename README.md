@@ -39,11 +39,12 @@ Tasks live in `tasks/tasks.yaml` (schema-validated, atomic writes, rolling backu
 
 For one specific scenario: **you want an autonomous coding agent to finish a multi-step project while you sleep, and you want to trust the result when you wake up.**
 
-- **Validation is the gate, not the agent's assessment.** A task isn't "done" until `pytest tests/foo.py && ruff check src/` exits zero. Claude cannot self-certify.
-- **Every run is resumable.** Crash the process, kill the terminal, sleep the machine — the next hook fire reads state from disk and picks up where it left off.
-- **Retry storms are capped.** After five failed resume attempts on the same task, the task is auto-blocked and the loop moves on instead of burning tokens.
-- **Three-layer observability.** `logs/trace.jsonl` (machine-readable), `logs/CHANGELOG.md` (human-readable audit trail), `logs/TASK-XXX.md` (per-task work log with full validation output).
-- **No framework tax.** One runtime dep (PyYAML); pytest and ruff are dev-only. No LangChain, no CrewAI, no vector store. Three Python files plus a few shell hook shims — readable in an afternoon.
+- **Validation is the gate, not the agent's assessment.** A task isn't "done" until its shell commands exit zero. Claude cannot self-certify. An optional project-wide `baseline_validation` list runs your CI's exact commands before any task can complete, so local-green and CI-green are the same gate by construction.
+- **Every run is resumable.** Crash the process, kill the terminal, sleep the machine — the next hook fire reads state from disk and picks up where it left off. If the Claude Code session itself crashed, `roadrunner resume --session-id` prints (or `--exec` runs) the `claude --resume <id>` command using the SessionStart hook's captured session ID.
+- **Runaway protection is structural.** Five failed resume attempts on the same task → auto-block. Iteration ceiling per session (`ROADMAP_MAX_ITERATIONS`, default 100) → hard halt. Optional USD ceiling per session (`ROADMAP_MAX_BUDGET_USD`) → same hard halt when accumulated Claude Code cost crosses the cap.
+- **Language-agnostic by design.** The harness treats validation commands as opaque shell invocations. Python projects gate on `pytest` / `ruff` / `mypy`; TypeScript projects gate on `npm test` / `eslint` / `tsc --noEmit`. The Python roadrunner CLI orchestrates; it does not assume the target project's language.
+- **Four-layer observability.** `logs/trace.jsonl` (machine-readable structured events), `logs/CHANGELOG.md` (human-readable audit trail), `logs/TASK-XXX.md` (per-task work log — hand-authored prose preserved across `complete`), `logs/learnings.md` (operator-curated append-only journal of non-obvious project facts, surfaced into every new session via SessionStart).
+- **No framework tax.** One runtime dep (PyYAML); pytest, ruff, and mypy are dev-only. No LangChain, no CrewAI, no vector store. A small Python package plus a few shell hook shims — readable in an afternoon.
 
 Roadrunner is not an agent *framework* — it's a *harness* that makes Claude Code deterministic. If you're building a general-purpose multi-agent system from scratch, look elsewhere.
 
@@ -73,32 +74,47 @@ git clone https://github.com/afoxnyc3/roadrunner-cli.git
 cd roadrunner-cli
 pip install -e '.[dev]'
 just hooks                 # chmod +x hooks/*.sh
+just ci                    # pytest + ruff + mypy — the exact CI gate
 roadrunner health
 ```
 
+`just ci` runs the same three commands GitHub Actions runs (`pytest tests/ -v`, `ruff check src/ hooks/ tests/`, `python3 -m mypy src tests --ignore-missing-imports`). When the loop is driving the roadmap, those three also run as the `baseline_validation` gate before every task can `complete` — local-green and CI-green are the same gate.
+
 ## Describing Work
 
-Each task in `tasks/tasks.yaml`:
+`tasks/tasks.yaml` is a project config block followed by an ordered task list:
 
 ```yaml
-- id: TASK-001
-  title: "Port the user model to TypeScript"
-  status: todo
-  depends_on: []
-  goal: "src/models/user.ts exports the same schema as py/models/user.py"
-  acceptance_criteria:
-    - "src/models/user.ts exists"
-    - "npm test -- user.test.ts passes"
-  validation_commands:
-    - "test -f src/models/user.ts"
-    - "npm test -- user.test.ts"
-  validation_timeout: 300
-  files_expected:
-    - "src/models/user.ts"
-    - "src/models/user.test.ts"
+project_base: main
+
+# Optional: project-wide CI-equivalent gate. Runs before every task's
+# validation_commands; short-circuits on first failure. Mirror your CI here
+# so local-green and CI-green are the same gate by construction.
+baseline_validation:
+  - npm test
+  - npm run lint
+  - npx tsc --noEmit
+
+tasks:
+  - id: TASK-001
+    title: "Port the user model to TypeScript"
+    status: todo
+    depends_on: []
+    goal: "src/models/user.ts exports the same schema as py/models/user.py"
+    acceptance_criteria:
+      - "src/models/user.ts exists"
+      - "npm test -- user.test.ts passes"
+    validation_commands:
+      - "test -f src/models/user.ts"
+      - "npm test -- user.test.ts"
+    validation_timeout: 300
+    files_expected:
+      - "src/models/user.ts"
+      - "src/models/user.test.ts"
+    model: "claude-sonnet-4-6"   # optional per-task model hint (advisory)
 ```
 
-Task IDs must match `[A-Z]+-\d+`. Missing required fields fail at load time. Full schema reference: [`docs/configuration.md`](docs/configuration.md).
+Task IDs must match `[A-Z]+-\d+`. Missing required fields fail at load time. The `model` field is advisory — surfaced in `status`, `next`, the resume brief, and every `check_stop` trace event, but the operator's `claude` wrapper is what actually selects the model. Full schema reference: [`docs/configuration.md`](docs/configuration.md).
 
 ## Operator Commands
 
@@ -123,7 +139,9 @@ roadrunner reset TASK-001 --summary "boundary marker"
 roadrunner watch [--interval N]  # live read-only monitor
 roadrunner health                # system check
 roadrunner pause                 # bypass the Stop hook for ad-hoc sessions
-roadrunner resume                # re-engage the loop
+roadrunner resume                # re-engage the loop (clears the pause marker)
+roadrunner resume --session-id   # print `claude --resume <id>` from the last captured session
+roadrunner resume --exec         # like --session-id, but exec the resume command directly
 roadrunner reset-iteration       # reset session counter (--soft default, --hard nukes lifetime)
 
 # Hook entry points (called by Claude Code; rarely run by hand)
@@ -143,16 +161,17 @@ Sometimes you want to open a Claude Code session in this repo without the determ
 
 Per-task artifacts:
 
-- `logs/TASK-XXX.md` — per-task work log with validation output
-- `logs/CHANGELOG.md` — project-level audit trail
-- `logs/trace.jsonl` — structured per-event trace, one JSON line per event
+- `logs/TASK-XXX.md` — per-task work log. Hand-authored prose above the `WORK_LOG_MARKER` line is preserved across repeated `complete` / `block` invocations; the validation transcript and notes below the marker are auto-generated and idempotently replaced.
+- `logs/CHANGELOG.md` — project-level audit trail.
+- `logs/trace.jsonl` — structured per-event trace, one JSON line per event.
+- `logs/learnings.md` — append-only operator journal. The agent appends one-line entries when it discovers a non-obvious project fact (unusual build command, flaky test, env var the script silently requires). SessionStart surfaces the last 20 entries into every new session's `additionalContext` so the lessons persist across context boundaries.
 
 Cross-session state:
 
-- `.roadmap_state.json` — current task, iteration count, attempt counters
-- `.context_snapshot.json` — written by PreCompact, verified by PostCompact; cold-resume state for crash recovery
+- `.roadmap_state.json` — current task, iteration count, session cost, last captured Claude session ID, attempt counters. Atomic writes via temp-file + `os.replace`, protected by a POSIX advisory lock.
+- `.context_snapshot.json` — written by PreCompact, verified by PostCompact; cold-resume state for crash recovery.
 
-Retention, rotation thresholds, and tunable env vars: [`docs/configuration.md`](docs/configuration.md).
+Retention, rotation thresholds, schema versions, and tunable env vars: [`docs/configuration.md`](docs/configuration.md).
 
 ## Trust Boundary
 
