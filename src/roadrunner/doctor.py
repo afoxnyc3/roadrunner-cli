@@ -6,7 +6,6 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import sys
 import tempfile
 import time
 
@@ -25,6 +24,11 @@ def main(argv):
         checks.append(dict(check="git", value=git(project, "rev-parse", "HEAD")))
         checks.append(dict(check="state_storage", value=str(location(project)), writable=os.access(location(project).parent, os.W_OK)))
         checks.append(dict(check="validation", value=policy["validation_commands"], protected=policy["protected_paths"]))
+        if not os.access(location(project).parent, os.W_OK):
+            raise ValueError("Controller state storage is not writable")
+        for name in policy["protected_paths"]:
+            if not (project / name).exists():
+                raise ValueError(f"Protected validation path missing: {name}")
         if policy["adapter"] == "claude":
             if not shutil.which("claude"):
                 raise ValueError("Install Claude Code and authenticate before running")

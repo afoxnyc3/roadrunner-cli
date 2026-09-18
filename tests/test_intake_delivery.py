@@ -150,22 +150,73 @@ def test_remote_verified_merge_contract(project, monkeypatch):
 
 
 def test_synced_plan_runs_and_freezes_revision(project):
-    first = intake.synchronize(project, intake.local_items(project.parent / 'plan.yaml'), {})
-    result = invoke(project, '--plan', first['plan'])
+    first = intake.synchronize(project, intake.local_items(project.parent / "plan.yaml"), {})
+    result = invoke(project, "--plan", first["plan"])
     assert result.returncode == 0, result.stdout + result.stderr
     saved, _ = state(project)
-    assert saved['items'][0]['task']['source_revision'] == first['items'][0]['revision']
+    assert saved["items"][0]["task"]["source_revision"] == first["items"][0]["revision"]
 
 
 def test_remote_push_failure_cannot_create_pr(project, monkeypatch):
     assert invoke(project).returncode == 0
     saved, _ = state(project)
     calls = []
+
     def fail(args):
         calls.append(args)
-        raise ValueError('Push denied')
-    monkeypatch.setattr(delivery, 'mutate', fail)
-    with pytest.raises(ValueError, match='Push denied'):
-        delivery.deliver(project, saved['id'], dict(repository='example/repo', base='main', allow_push=True), True)
+        raise ValueError("Push denied")
+
+    monkeypatch.setattr(delivery, "mutate", fail)
+    with pytest.raises(ValueError, match="Push denied"):
+        delivery.deliver(project, saved["id"], dict(repository="example/repo", base="main", allow_push=True), True)
     assert len(calls) == 1
-    assert calls[0][3] == 'push'
+    assert calls[0][3] == "push"
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_issue_closure_requires_matching_revision_and_verified_merge(project, monkeypatch, changed):
+    assert invoke(project).returncode == 0
+    saved, path = state(project)
+    head = saved["items"][0]["evidence"]["candidate"]
+    row = dict(id=7, updated_at="selected", title="Issue", body="Requirement", state="open")
+    saved["items"][0]["task"].update(source_id="github:example/repo#7", source_revision=delivery.digest(row))
+    delivery.atomic(path, saved)
+    if changed:
+        row["updated_at"] = "edited"
+    pr = dict(
+        number=1,
+        url="https://github.com/example/repo/pull/1",
+        headRefOid=head,
+        baseRefName="main",
+        state="MERGED",
+        mergeCommit={"oid": "merge"},
+        statusCheckRollup=[dict(name="CI", conclusion="SUCCESS")],
+    )
+    mutations = []
+
+    def mutate(args):
+        mutations.append(args)
+        if args[:3] == ["gh", "issue", "close"]:
+            row["state"] = "closed"
+        return head + "\tref" if args[:2] == ["git", "ls-remote"] else ""
+
+    def gh(args):
+        if args[0] == "api":
+            if "/git/commits/" in args[1]:
+                return {"tree": {"sha": delivery.git(project, "rev-parse", head + "^{tree}")}}
+            if "/issues/" in args[1]:
+                return dict(row)
+            return {"status": "ahead"}
+        return [pr] if args[1] == "list" else pr
+
+    monkeypatch.setattr(delivery, "mutate", mutate)
+    monkeypatch.setattr(delivery, "gh", gh)
+    policy = dict(repository="example/repo", base="main", allow_push=True, allow_close=True, required_checks=["CI"])
+    if changed:
+        with pytest.raises(ValueError, match="changed after selection"):
+            delivery.deliver(project, saved["id"], policy, True)
+        assert not any(args[:3] == ["gh", "issue", "close"] for args in mutations)
+    else:
+        result = delivery.deliver(project, saved["id"], policy, True)
+        assert result["closures"][0]["disposition"] == "closed_after_verified_merge"
+        assert row["state"] == "closed"

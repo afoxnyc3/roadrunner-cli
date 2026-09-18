@@ -2157,7 +2157,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("  2. Review CLAUDE.md and tailor the agent brief to your project.")
     print("  3. Confirm .claude/settings.json wires up the hooks you want to run.")
     print("  4. Run `roadrunner status` to confirm the roadmap parses.")
-    print("  5. Start the loop with `roadrunner next`.")
+    print("  5. Review a run policy, then use `roadrunner doctor` and `roadrunner run --plan tasks/tasks.yaml --policy POLICY.json`.")
     if skipped:
         print()
         print(f"Skipped {len(skipped)} existing path(s); they were left untouched.")
@@ -2491,6 +2491,11 @@ def main() -> None:
         sys.exit(run_main(sys.argv[2:]))
     parser = argparse.ArgumentParser(description="Roadmap Loop Controller")
     sub = parser.add_subparsers(dest="command")
+    for name, description in (("run", "Execute a frozen plan with verified local integration"),
+                              ("sync", "Normalize and freeze selected roadmap or GitHub items"),
+                              ("deliver", "Prepare or explicitly execute policy-controlled remote delivery"),
+                              ("doctor", "Preflight project, policy, adapter, and isolation")):
+        sub.add_parser(name, help=description)
 
     sub.add_parser("status")
     sub.add_parser("next")

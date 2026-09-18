@@ -7,7 +7,7 @@ compare-and-swap; a persisted integration intent makes that side effect recovera
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import fcntl
 import hashlib
 import json
@@ -180,13 +180,13 @@ def terminate(process):
     process.wait()
 
 
-def execute(command, work, scratch, policy, deadline, log, env, network=False):
+def execute(command, work, scratch, policy, deadline, log, env, network=False, stderr_log=None):
     """File-backed output, bounded wall time, cancellation, descendant cleanup."""
     command = sandbox_command(command, work, scratch, policy, network)
     command = [sys.executable, "-I", str(Path(__file__).with_name("process_guard.py")), *command]
-    with log.open("wb") as output:
+    with log.open("wb") as output, stderr_log.open("wb") if stderr_log else nullcontext(subprocess.STDOUT) as error:
         process = subprocess.Popen(
-            command, cwd=work, env=env, stdout=output, stderr=subprocess.STDOUT, stdin=subprocess.PIPE, start_new_session=True
+            command, cwd=work, env=env, stdout=output, stderr=error, stdin=subprocess.PIPE, start_new_session=True
         )
         try:
             while process.poll() is None:
@@ -276,7 +276,22 @@ def checkpoint(directory, state):
 
 def reconcile(project, directory, state):
     for item in state["items"]:
-        if item["phase"] == "integrating":
+        if item["phase"] == "resolved":
+            evidence = item.get("evidence", {})
+            try:
+                if (
+                    evidence.get("gate_version") != state["gate_version"]
+                    or not evidence.get("gates")
+                    or any(gate.get("exit_code") != 0 for gate in evidence["gates"])
+                ):
+                    raise ValueError("Missing or invalid gate evidence")
+                git(project, "merge-base", "--is-ancestor", evidence["task_commit"], evidence["candidate"])
+                git(project, "merge-base", "--is-ancestor", evidence["candidate"], state["branch"])
+            except (ValueError, KeyError) as exc:
+                # An external ref rewrite revokes current delivery, retaining historical evidence.
+                item["phase"] = "blocked"
+                item["reason"] = f"Previously integrated evidence is no longer valid: {exc}. Reconcile the integration branch."
+        elif item["phase"] == "integrating":
             evidence = item.get("evidence", {})
             current = git(project, "rev-parse", state["branch"])
             if current == evidence.get("candidate") and evidence.get("gate_version") == state["gate_version"]:
@@ -341,6 +356,7 @@ def drive(project, directory, state):
         state["reserved_usd"] += attempt["budget_usd"]
         transition(item, "running")
         checkpoint(directory, state)
+        failure_category = "infrastructure"
         try:
             if not work.exists():
                 git(project, "worktree", "add", "--detach", str(work), base)
@@ -363,6 +379,9 @@ def drive(project, directory, state):
             )
             env.pop("PYTHONPATH", None)
             log = directory / f"{task['id']}-{number}-worker.log"
+            error_log = directory / f"{task['id']}-{number}-worker-stderr.log"
+            attempt["worker_log"] = str(log)
+            attempt["worker_stderr"] = str(error_log)
             deadline = min(state["deadline"], time.time() + policy["attempt_seconds"])
             code = execute(
                 worker_command(policy, task, attempt, scratch),
@@ -373,6 +392,7 @@ def drive(project, directory, state):
                 log,
                 env,
                 network=policy["adapter"] == "claude",
+                stderr_log=error_log,
             )
             attempt["worker_log"] = str(log)
             if code:
@@ -381,8 +401,19 @@ def drive(project, directory, state):
                 response = json.loads(log.read_text())
                 attempt["session_id"] = response.get("session_id")
                 attempt["cost_usd"] = response.get("total_cost_usd")
-                if response.get("is_error") or not isinstance(attempt["cost_usd"], (int, float)):
+                cost = attempt["cost_usd"]
+                if (
+                    response.get("is_error")
+                    or isinstance(cost, bool)
+                    or not isinstance(cost, (int, float))
+                    or not math.isfinite(cost)
+                    or cost < 0
+                ):
                     raise ValueError("Agent error or missing usage telemetry. Inspect worker log and adapter compatibility.")
+                if cost > attempt["budget_usd"]:
+                    state["reserved_usd"] += cost - attempt["budget_usd"]
+                    raise ValueError("Agent exceeded native attempt budget; review adapter usage before continuing")
+            failure_category = "implementation"
             if protected_hashes(work, policy["protected_paths"]) != gate_hashes:
                 raise ValueError("Frozen gate files changed. Restore protected files before retry.")
             paths = inspect_scope(work, task, policy["protected_paths"])
@@ -417,6 +448,7 @@ def drive(project, directory, state):
                 task_commit,
             )
             candidate = git(integration, "rev-parse", "HEAD")
+            failure_category = "validation"
             gate_results = []
             for index, command in enumerate(policy["validation_commands"]):
                 gate_log = directory / f"{task['id']}-{number}-gate-{index}.log"
@@ -437,6 +469,7 @@ def drive(project, directory, state):
             item["evidence"] = dict(
                 base=base, candidate=candidate, task_commit=task_commit, gate_version=state["gate_version"], gates=gate_results
             )
+            failure_category = "integration"
             transition(item, "integrating")
             checkpoint(directory, state)
             git(project, "update-ref", state["branch"], candidate, base)
@@ -453,6 +486,7 @@ def drive(project, directory, state):
             break
         except (ValueError, OSError, subprocess.SubprocessError, TimeoutError) as exc:
             attempt["outcome"] = "failed"
+            attempt["failure_category"] = failure_category
             attempt["reason"] = str(exc)
             if item["phase"] == "integrating":
                 transition(item, "blocked", str(exc))
@@ -481,6 +515,8 @@ def report(state):
         items=[
             {
                 "id": i["task"]["id"],
+                "source_id": i["task"].get("source_id"),
+                "source_revision": i["task"].get("source_revision"),
                 "phase": i["phase"],
                 "reason": i.get("reason"),
                 "attempts": len(i["attempts"]),
@@ -526,7 +562,16 @@ def run(args):
                 items=[dict(task=t, phase="ready", attempts=[]) for t in tasks],
             )
             checkpoint(directory, state)
-        return drive(project, directory, state)
+        if digest(state["policy"]) != state["gate_version"]:
+            raise ValueError("Frozen policy hash mismatch; restore controller state from trusted evidence")
+        try:
+            return drive(project, directory, state)
+        except (ValueError, OSError, subprocess.SubprocessError) as exc:
+            for item in state["items"]:
+                if item["phase"] not in TERMINAL:
+                    transition(item, "blocked", f"Controller recovery required: {exc}")
+            checkpoint(directory, state)
+            return report(state)
 
 
 def main(argv):
@@ -539,7 +584,7 @@ def main(argv):
     previous = signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         return run(args)
-    except (ValueError, OSError, subprocess.SubprocessError) as exc:
+    except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         print(json.dumps({"outcome": "blocked", "reason": str(exc)}), file=sys.stderr)
         return 2
     finally:

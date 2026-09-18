@@ -1,0 +1,13 @@
+{
+  "adapter": "claude",
+  "sandbox": "macos",
+  "delivery": "local",
+  "validation_commands": ["PYTHONDONTWRITEBYTECODE=1 python3 tests/acceptance.py"],
+  "protected_paths": ["tests/acceptance.py"],
+  "max_attempts": 2,
+  "attempt_seconds": 120,
+  "validation_seconds": 60,
+  "run_seconds": 600,
+  "max_budget_usd": 3.0,
+  "attempt_budget_usd": 0.5
+}

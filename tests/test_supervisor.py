@@ -164,12 +164,17 @@ def test_reconcile_integrated_intent_without_duplicate(project):
 
 
 def test_deadline_and_cancellation_cleanup(project):
-    (project.parent / "agent.py").write_text("import time\ntime.sleep(30)\n")
+    (project.parent / "agent.py").write_text(
+        "import os,sys,time,subprocess\nfrom pathlib import Path\n"
+        "child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])\n"
+        "Path(os.environ['TMPDIR'],'child.pid').write_text(str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
     process = subprocess.Popen(
         command(project), stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=dict(os.environ, PYTHONPATH=str(SOURCE / "src"))
     )
     for _ in range(100):
-        paths = list(runner.location(project).glob("*/*worker.log"))
+        paths = list(runner.location(project).glob("*/scratch-*/child.pid"))
         if paths:
             break
         time.sleep(0.05)
@@ -178,6 +183,15 @@ def test_deadline_and_cancellation_cleanup(project):
     assert process.returncode == 2, stderr
     assert json.loads(stdout)["items"][0]["phase"] == "cancelled"
     assert state(project)[0]["reserved_usd"] == 1
+    child_pid = int(paths[0].read_text())
+    for _ in range(40):
+        try:
+            os.kill(child_pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.05)
+    else:
+        pytest.fail("Cancelled worker descendant survived process-group cleanup")
 
 
 def test_crash_resume_retains_allowance(project):
@@ -267,12 +281,70 @@ Path('allowed').write_text('ok')
     assert (work / "allowed").read_text() == "ok"
 
 
-@pytest.mark.skipif(sys.platform != 'darwin', reason='macOS worker sandbox')
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS worker sandbox")
 def test_external_project_under_enforced_sandbox(project):
-    path = project.parent / 'policy.json'
+    path = project.parent / "policy.json"
     policy = json.loads(path.read_text())
-    policy['sandbox'] = 'macos'
+    policy["sandbox"] = "macos"
     path.write_text(json.dumps(policy))
     result = invoke(project)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert state(project)[0]['items'][0]['phase'] == 'resolved'
+    assert state(project)[0]["items"][0]["phase"] == "resolved"
+
+
+def test_worker_claim_and_yaml_edits_cannot_resolve(project):
+    (project.parent / "agent.py").write_text("print('ROADMAP_COMPLETE')\n")
+    result = invoke(project)
+    assert result.returncode == 2
+    saved, _ = state(project)
+    assert saved["items"][0]["phase"] == "blocked"
+    assert "No implementation progress" in saved["items"][0]["attempts"][0]["reason"]
+
+
+def test_doctor_fixture_preflight(project):
+    result = subprocess.run(
+        [sys.executable, "-m", "roadrunner", "doctor", "--project", str(project), "--policy", str(project.parent / "policy.json")],
+        capture_output=True,
+        text=True,
+        env=dict(os.environ, PYTHONPATH=str(SOURCE / "src")),
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["outcome"] == "ready_for_canary"
+
+
+def test_resume_detects_reverted_integration(project):
+    assert invoke(project).returncode == 0
+    saved, _ = state(project)
+    runner.git(project, "update-ref", saved["branch"], saved["base"])
+    result = invoke(project, "--resume", saved["id"])
+    assert result.returncode == 2
+    assert json.loads(result.stdout)["items"][0]["phase"] == "blocked"
+    assert "no longer valid" in json.loads(result.stdout)["items"][0]["reason"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS Claude adapter boundary")
+def test_claude_adapter_structured_output_ignores_stderr(project, monkeypatch):
+    binaries = project.parent / "fake-bin"
+    binaries.mkdir()
+    executable = binaries / "claude"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json,sys\nfrom pathlib import Path\n"
+        "assert '--max-budget-usd' in sys.argv\n"
+        "Path('one').write_text('fixed')\n"
+        "print('diagnostic warning',file=sys.stderr)\n"
+        "print(json.dumps({'session_id':'fixture-session','total_cost_usd':0.1,'is_error':False}))\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
+    path = project.parent / "policy.json"
+    policy = json.loads(path.read_text())
+    policy.update(adapter="claude", sandbox="macos")
+    path.write_text(json.dumps(policy))
+    result = invoke(project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    saved, _ = state(project)
+    attempt = saved["items"][0]["attempts"][0]
+    assert attempt["session_id"] == "fixture-session"
+    assert attempt["cost_usd"] == 0.1
+    assert "diagnostic warning" in Path(attempt["worker_stderr"]).read_text()
