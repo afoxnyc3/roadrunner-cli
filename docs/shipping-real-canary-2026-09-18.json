@@ -89,5 +89,66 @@
       }
     ]
   },
-  "next_action": "Approve one additional attempt per implementation task using retry-policy.json; no old reservations or attempts were reset."
+  "next_action": "Approve a new one-attempt-per-task canary with relocated worktrees; $0.99 new reservations, $3.65 cumulative reservations. Existing records remain unchanged.",
+  "approved_retry": {
+    "run_id": "a2807fe1-d0a5-4d1b-83bf-65798c455783",
+    "branch": "refs/heads/roadrunner/run-a2807fe1-d0a5-4d1b-83bf-65798c455783",
+    "fixture": false,
+    "outcome": "finished_with_blockers",
+    "reserved_usd": 0.66,
+    "items": [
+      {
+        "id": "TASK-001",
+        "source_id": null,
+        "source_revision": null,
+        "phase": "blocked",
+        "reason": "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy.",
+        "attempts": 1,
+        "evidence": null
+      },
+      {
+        "id": "TASK-002",
+        "source_id": null,
+        "source_revision": null,
+        "phase": "blocked",
+        "reason": "Prerequisite unresolved. Resolve the dependency blocker and select a new run.",
+        "attempts": 0,
+        "evidence": null
+      },
+      {
+        "id": "TASK-003",
+        "source_id": null,
+        "source_revision": null,
+        "phase": "blocked",
+        "reason": "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy.",
+        "attempts": 1,
+        "evidence": null
+      },
+      {
+        "id": "TASK-004",
+        "source_id": null,
+        "source_revision": null,
+        "phase": "needs_input",
+        "reason": "Specify goal, acceptance criteria, and allowed files in the reviewed plan.",
+        "attempts": 0,
+        "evidence": null
+      },
+      {
+        "id": "TASK-005",
+        "source_id": null,
+        "source_revision": null,
+        "phase": "needs_input",
+        "reason": "Specify goal, acceptance criteria, and allowed files in the reviewed plan.",
+        "attempts": 0,
+        "evidence": null
+      }
+    ],
+    "outcome_detail": "authenticated; Write denied because task paths were beneath .git; no integration",
+    "reported_cost_usd": 0.18917150000000002,
+    "operator_head": "eb0d20fa159a6a7e5158b0a434d8d1897d906d1c",
+    "native_logs": [
+      "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/a2807fe1-d0a5-4d1b-83bf-65798c455783/TASK-001-1-worker.log",
+      "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/a2807fe1-d0a5-4d1b-83bf-65798c455783/TASK-003-1-worker.log"
+    ]
+  }
 }

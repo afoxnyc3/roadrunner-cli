@@ -10,3 +10,5 @@ session so the lessons stick across context boundaries. Append; do not
 edit prior entries (history is the point).
 
 <!-- Append new entries below. Format: `YYYY-MM-DD — terse fact`. -->
+
+2026-09-18 — Claude Code refuses native Write beneath .git even with allowedTools; keep task worktrees outside controller Git metadata and persist their location for recovery.

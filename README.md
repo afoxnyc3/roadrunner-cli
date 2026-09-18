@@ -47,7 +47,7 @@ Choose meaningful acceptance gates and protect their scripts and supporting fixt
 
 ## Resolution and recovery
 
-The operator checkout stays on its existing branch, including uncommitted changes. Work starts from the committed HEAD and lands on `roadrunner/run-<UUID>`. Review that local branch before adopting it. Controller state, frozen policy, attempt records, retained worktrees and full logs live under the Git common directory's `roadrunner/<UUID>/` directory.
+The operator checkout stays on its existing branch, including uncommitted changes. Work starts from the committed HEAD and lands on `roadrunner/run-<UUID>`. Review that local branch before adopting it. Controller state, frozen policy, attempt records, integration candidates and full logs live under the Git common directory's `roadrunner/<UUID>/` directory. Task worktrees live in a private temporary directory outside Git metadata (recorded as `task_work_root` in `run.json`), retained across retries and resume. Preserve that directory while recovering unfinished work; system temporary-file cleanup may remove it.
 
 A task progresses through `ready`, `running`, `validating`, `integrating`, and `resolved`. Missing requirements become `needs_input`; exhausted attempts/deadlines and unresolved prerequisites become `blocked`. Cancellation produces `cancelled`. Exit code 0 means all selected tasks resolved locally; exit code 2 means blockers or cancellation, with a JSON report explaining the disposition.
 

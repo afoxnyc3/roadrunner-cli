@@ -19,6 +19,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 
@@ -346,7 +347,7 @@ def reconcile(project, directory, state):
                 item["reason"] = f"Integration evidence is no longer valid: {exc}. Reconcile the integration branch and gate evidence."
         elif item["phase"] in ("running", "validating"):
             # Charged attempts and reserved budget survive crashes. Never infer success.
-            work = directory / ("work-" + item["task"]["id"])
+            work = Path(state.get("task_work_root", str(directory))) / ("work-" + item["task"]["id"])
             if work.exists() and item["attempts"]:
                 git(work, "reset", "--mixed", item["attempts"][-1]["base"])
             transition(item, "ready", "Interrupted attempt; retry within remaining allowance")
@@ -388,12 +389,15 @@ def drive(project, directory, state):
             continue
         remaining = policy["max_budget_usd"] - state["reserved_usd"]
         if len(item["attempts"]) >= policy["max_attempts"] or remaining <= 0.000001:
-            transition(item, "blocked", "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy.")
+            last_reason = item["attempts"][-1].get("reason", "") if item["attempts"] else ""
+            transition(
+                item, "blocked", "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy. " + last_reason
+            )
             checkpoint(directory, state)
             continue
         number = len(item["attempts"]) + 1
         base = git(project, "rev-parse", state["branch"])
-        work = directory / ("work-" + task["id"])
+        work = Path(state.get("task_work_root", str(directory))) / ("work-" + task["id"])
         scratch = directory / ("scratch-" + task["id"])
         scratch.mkdir(exist_ok=True)
         attempt = dict(
@@ -452,6 +456,10 @@ def drive(project, directory, state):
                 if cost > attempt["budget_usd"]:
                     state["reserved_usd"] += cost - attempt["budget_usd"]
                     raise ValueError("Agent exceeded native attempt budget; review adapter usage before continuing")
+                if response.get("permission_denials"):
+                    raise ValueError(
+                        f"Claude tool permission denied. Inspect {log}; review the worktree path and tool policy before a new run."
+                    )
             failure_category = "implementation"
             if protected_hashes(work, policy["protected_paths"]) != gate_hashes:
                 raise ValueError("Frozen gate files changed. Restore protected files before retry.")
@@ -598,6 +606,10 @@ def run(args):
             state = dict(
                 id=run_id,
                 project=str(project),
+                # Native Claude refuses writes anywhere beneath .git, even with
+                # allowedTools. Keep only controller data there; persist the
+                # private workspace location so retries and recovery reuse it.
+                task_work_root=str(Path(tempfile.mkdtemp(prefix="roadrunner-work-" + run_id + "-")).resolve()),
                 branch=branch,
                 base=base,
                 policy=policy,

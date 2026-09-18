@@ -230,10 +230,10 @@ def test_attempt_timeout_blocks(project):
 
 def test_changed_integration_ref_cannot_resolve(project):
     # Simulate an external writer, using the explicit trusted fixture adapter.
-    (project.parent / "agent.py").write_text("""import json, subprocess
+    (project.parent / "agent.py").write_text("""import json, os, subprocess
 from pathlib import Path
 Path('one').write_text('fixed')
-state = json.loads((Path.cwd().parent / 'run.json').read_text())
+state = json.loads((Path(os.environ['TMPDIR']).parent / 'run.json').read_text())
 subprocess.run(['git', 'update-ref', '-d', state['branch']], check=True)
 """)
     result = invoke(project)
@@ -323,7 +323,8 @@ def test_resume_detects_reverted_integration(project):
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="macOS Claude adapter boundary")
-def test_claude_adapter_structured_output_ignores_stderr(project, monkeypatch):
+@pytest.mark.parametrize("denied", [False, True])
+def test_claude_adapter_structured_output_ignores_stderr(project, monkeypatch, denied):
     binaries = project.parent / "fake-bin"
     binaries.mkdir()
     executable = binaries / "claude"
@@ -332,6 +333,9 @@ def test_claude_adapter_structured_output_ignores_stderr(project, monkeypatch):
         "import json,sys\nfrom pathlib import Path\n"
         "if sys.argv[1:]==['auth','status']: print(json.dumps({'loggedIn':True})); sys.exit(0)\n"
         "assert '--max-budget-usd' in sys.argv\n"
+        "assert '.git' not in Path.cwd().resolve().parts, 'Claude protected-path write denial'\n"
+        f"denied = {denied!r}\n"
+        "if denied: print(json.dumps({'total_cost_usd':0.1, 'permission_denials':[{'tool_name':'Write'}]})); sys.exit(0)\n"
         "Path('one').write_text('fixed')\n"
         "print('diagnostic warning',file=sys.stderr)\n"
         "print(json.dumps({'session_id':'fixture-session','total_cost_usd':0.1,'is_error':False}))\n"
@@ -343,9 +347,23 @@ def test_claude_adapter_structured_output_ignores_stderr(project, monkeypatch):
     policy.update(adapter="claude", sandbox="macos")
     path.write_text(json.dumps(policy))
     result = invoke(project)
+    if denied:
+        assert result.returncode == 2
+        assert "Claude tool permission denied" in json.loads(result.stdout)["items"][0]["reason"]
+        saved, _ = state(project)
+        assert runner.git(project, "rev-parse", saved["branch"]) == saved["base"]
+        return
     assert result.returncode == 0, result.stdout + result.stderr
     saved, _ = state(project)
     attempt = saved["items"][0]["attempts"][0]
+    work_root = Path(saved["task_work_root"])
+    assert not work_root.is_relative_to(project)
+    assert work_root.stat().st_mode & 0o777 == 0o700
+    assert (work_root / "work-TASK-001" / "one").read_text() == "fixed"
+    assert invoke(project, "--resume", saved["id"]).returncode == 0
+    resumed, _ = state(project)
+    assert resumed["task_work_root"] == str(work_root)
+    assert len(resumed["items"][0]["attempts"]) == 1
     assert attempt["session_id"] == "fixture-session"
     assert attempt["cost_usd"] == 0.1
     assert "diagnostic warning" in Path(attempt["worker_stderr"]).read_text()
