@@ -63,3 +63,13 @@ The audit also reproduced silent reuse of a modified frozen-plan file. Sync now 
 Updated verification: **295 passed, 1 skipped**, Ruff, mypy (21 files), and ShellCheck passed. The updated wheel repeated the complete installed six-item demonstration at `/private/tmp/rr-installed-recovery-qualified-2026-09-18`; the linked evidence JSON now records its exact hash and attempt-bound candidate evidence. Earlier experimental run records lacking the new attempt-bound evidence fail closed; their success is not inferred or migrated automatically.
 
 The real-Claude canary remains unapproved and unrun. Its disposable target and proposed $3/ten-minute budget are unchanged. The active goal is not complete.
+
+## Approved real-agent canary — authentication defect reproduced and corrected
+
+The user approved the prepared $3/ten-minute canary. Installed run `9a6ef343-9729-48e1-a372-e2aab459544a` executed in the exact disposable target and ended safely without integration. Native Claude reported `Not logged in` on four worker launches: **zero model API duration, zero input/output tokens, $0 reported cost**. Its $2 conservative reservations and consumed attempt records are preserved. Dependent work became blocked; both intentionally incomplete requirements became needs-input. See [real canary evidence](shipping-real-canary-2026-09-18.json).
+
+Cause: replacing `CLAUDE_CONFIG_DIR` with an empty attempt directory selected a different authentication namespace. Worker environment now preserves the operator's namespace read-only; write permissions remain limited to work/scratch paths. Both `doctor` and `run` perform authentication checks inside the same worker sandbox/environment. A failed auth probe blocks all selected work before consuming attempts or reservations. Corrected read-only native preflight succeeds; this does not establish that a model implementation run succeeds.
+
+Verification after the fix: **297 passed, 1 skipped**, Ruff, mypy, ShellCheck, and the updated installed six-item fake-agent demonstration pass. Fixture regressions cover namespace preservation, no-budget/no-attempt auth failure, and structured adapter output through the new probe.
+
+The prepared retry uses the same target and plan, **one additional attempt per executable task, $0.33 per attempt, $0.99 total, 540 seconds**. Aggregate reservations including the failed run would be $2.99, below the original $3. Because task attempt allowances were exhausted, this retry requires an explicit new allowance; none was silently reset. Exact policy and command: `/private/tmp/roadrunner-real-canary-2026-09-18/APPROVAL-RETRY.md`. M4 remains incomplete. No real remote mutations have occurred.

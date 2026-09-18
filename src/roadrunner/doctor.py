@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 import time
 
-from .supervisor import execute, git, load_policy, location
+from .supervisor import check_worker_auth, execute, git, load_policy, location, worker_environment
 
 
 def main(argv):
@@ -36,10 +36,6 @@ def main(argv):
             if version.returncode:
                 raise ValueError("Claude adapter version check failed")
             checks.append(dict(check="adapter_version", value=version.stdout.strip()))
-            auth = subprocess.run(["claude", "auth", "status"], text=True, capture_output=True, timeout=10)
-            if auth.returncode:
-                raise ValueError("Claude authentication unavailable; run claude auth login")
-            checks.append(dict(check="authentication", value="available; canary still required"))
         with tempfile.TemporaryDirectory(prefix="roadrunner-doctor-") as temporary:
             root = Path(temporary).resolve()
             work = root / "worker"
@@ -47,9 +43,12 @@ def main(argv):
             work.mkdir()
             scratch.mkdir()
             log = root / "probe.log"
-            code = execute(["/usr/bin/true"], work, scratch, policy, time.time() + 5, log, dict(os.environ))
+            code = execute(["/usr/bin/true"], work, scratch, policy, time.time() + 5, log, worker_environment(work, scratch))
             if code:
                 raise ValueError("Worker isolation probe failed: " + log.read_text())
+            if policy["adapter"] == "claude":
+                check_worker_auth(work, scratch, policy, time.time() + 10)
+                checks.append(dict(check="authentication", value="available inside worker sandbox; canary still required"))
         checks.append(dict(check="isolation", value=policy["sandbox"]))
         print(json.dumps(dict(outcome="ready_for_canary", checks=checks), indent=2))
         return 0

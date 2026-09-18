@@ -1,0 +1,93 @@
+{
+  "run_id": "9a6ef343-9729-48e1-a372-e2aab459544a",
+  "outcome": "authentication_failed_before_model_api_work",
+  "reserved_usd": 2.0,
+  "reported_cost_usd": 0,
+  "api_duration_ms": 0,
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "items": [
+    {
+      "id": "TASK-001",
+      "source_id": null,
+      "source_revision": null,
+      "phase": "blocked",
+      "reason": "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy.",
+      "attempts": 2,
+      "evidence": null
+    },
+    {
+      "id": "TASK-002",
+      "source_id": null,
+      "source_revision": null,
+      "phase": "blocked",
+      "reason": "Prerequisite unresolved. Resolve the dependency blocker and select a new run.",
+      "attempts": 0,
+      "evidence": null
+    },
+    {
+      "id": "TASK-003",
+      "source_id": null,
+      "source_revision": null,
+      "phase": "blocked",
+      "reason": "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy.",
+      "attempts": 2,
+      "evidence": null
+    },
+    {
+      "id": "TASK-004",
+      "source_id": null,
+      "source_revision": null,
+      "phase": "needs_input",
+      "reason": "Specify goal, acceptance criteria, and allowed files in the reviewed plan.",
+      "attempts": 0,
+      "evidence": null
+    },
+    {
+      "id": "TASK-005",
+      "source_id": null,
+      "source_revision": null,
+      "phase": "needs_input",
+      "reason": "Specify goal, acceptance criteria, and allowed files in the reviewed plan.",
+      "attempts": 0,
+      "evidence": null
+    }
+  ],
+  "operator_head": "eb0d20fa159a6a7e5158b0a434d8d1897d906d1c",
+  "corrected_preflight": {
+    "outcome": "ready_for_canary",
+    "checks": [
+      {
+        "check": "git",
+        "value": "eb0d20fa159a6a7e5158b0a434d8d1897d906d1c"
+      },
+      {
+        "check": "state_storage",
+        "value": "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner",
+        "writable": true
+      },
+      {
+        "check": "validation",
+        "value": [
+          "PYTHONDONTWRITEBYTECODE=1 /private/tmp/rr-m4-installed/bin/python gate.py"
+        ],
+        "protected": [
+          "gate.py"
+        ]
+      },
+      {
+        "check": "adapter_version",
+        "value": "2.1.277 (Claude Code)"
+      },
+      {
+        "check": "authentication",
+        "value": "available inside worker sandbox; canary still required"
+      },
+      {
+        "check": "isolation",
+        "value": "macos"
+      }
+    ]
+  },
+  "next_action": "Approve one additional attempt per implementation task using retry-policy.json; no old reservations or attempts were reset."
+}

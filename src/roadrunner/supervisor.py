@@ -232,6 +232,31 @@ def inspect_scope(work, task, protected):
     return paths
 
 
+def worker_environment(work, scratch):
+    """Use the operator's authentication namespace read-only under the OS sandbox.
+
+    Replacing CLAUDE_CONFIG_DIR selects a different credential/keychain namespace.
+    Configuration writes remain denied; temporary files belong to the attempt.
+    """
+    env = dict(os.environ, CLAUDE_PROJECT_DIR=str(work), TMPDIR=str(scratch))
+    env.pop("PYTHONPATH", None)
+    return env
+
+
+def check_worker_auth(work, scratch, policy, deadline):
+    log = scratch / "auth-status.json"
+    error_log = scratch / "auth-status-stderr.log"
+    code = execute(
+        ["claude", "auth", "status"], work, scratch, policy, deadline, log, worker_environment(work, scratch), stderr_log=error_log
+    )
+    try:
+        status = json.loads(log.read_text())
+    except (ValueError, OSError) as exc:
+        raise ValueError("Isolated Claude authentication probe failed; inspect adapter configuration and sandbox access") from exc
+    if code or not isinstance(status, dict) or status.get("loggedIn") is not True:
+        raise ValueError("Claude authentication unavailable inside the worker sandbox; run claude auth login before a new run")
+
+
 def worker_command(policy, task, attempt, scratch):
     if policy["adapter"] == "fixture":
         command = policy.get("fixture_command")
@@ -333,6 +358,10 @@ def drive(project, directory, state):
     if digest(policy) != state["gate_version"]:
         raise ValueError("Frozen policy hash mismatch; restore controller state from trusted evidence")
     reconcile(project, directory, state)
+    if policy["adapter"] == "claude" and any(item["phase"] not in TERMINAL for item in state["items"]):
+        probe = directory / "auth-probe"
+        probe.mkdir(exist_ok=True)
+        check_worker_auth(probe, probe, policy, min(state["deadline"], time.time() + 10))
     while True:
         unfinished = [item for item in state["items"] if item["phase"] not in TERMINAL]
         if not unfinished:
@@ -386,16 +415,8 @@ def drive(project, directory, state):
                 checkpoint(directory, state)
             elif gate_hashes != state["gate_files"]:
                 raise ValueError("Gate files differ from frozen baseline. Restore reviewed validation files.")
-            env = dict(
-                os.environ,
-                CLAUDE_PROJECT_DIR=str(work),
-                TMPDIR=str(scratch),
-                CLAUDE_CONFIG_DIR=str(scratch / "claude"),
-                ROADRUNNER_TASK=json.dumps(task),
-                ROADRUNNER_ATTEMPT=str(number),
-                ROADRUNNER_ATTEMPT_ID=attempt["id"],
-            )
-            env.pop("PYTHONPATH", None)
+            env = worker_environment(work, scratch)
+            env.update(ROADRUNNER_TASK=json.dumps(task), ROADRUNNER_ATTEMPT=str(number), ROADRUNNER_ATTEMPT_ID=attempt["id"])
             log = directory / f"{task['id']}-{number}-worker.log"
             error_log = directory / f"{task['id']}-{number}-worker-stderr.log"
             attempt["worker_log"] = str(log)

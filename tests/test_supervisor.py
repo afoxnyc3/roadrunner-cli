@@ -330,6 +330,7 @@ def test_claude_adapter_structured_output_ignores_stderr(project, monkeypatch):
     executable.write_text(
         f"#!{sys.executable}\n"
         "import json,sys\nfrom pathlib import Path\n"
+        "if sys.argv[1:]==['auth','status']: print(json.dumps({'loggedIn':True})); sys.exit(0)\n"
         "assert '--max-budget-usd' in sys.argv\n"
         "Path('one').write_text('fixed')\n"
         "print('diagnostic warning',file=sys.stderr)\n"
@@ -398,3 +399,35 @@ def test_reconcile_valid_intent_before_ref_update(project):
     assert runner.git(project, "rev-parse", saved["branch"]) == item["evidence"]["candidate"]
     assert state(project)[0]["reserved_usd"] == saved["reserved_usd"]
     assert len(state(project)[0]["items"][0]["attempts"]) == 1
+
+
+def test_worker_preserves_auth_namespace_without_broadening_writes(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/configured/auth/namespace")
+    env = runner.worker_environment(tmp_path / "worker", tmp_path / "scratch")
+    assert env["CLAUDE_CONFIG_DIR"] == "/configured/auth/namespace"
+    assert env["TMPDIR"] == str(tmp_path / "scratch")
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR")
+    assert "CLAUDE_CONFIG_DIR" not in runner.worker_environment(tmp_path, tmp_path)
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS Claude adapter boundary")
+def test_auth_preflight_stops_before_attempts_and_budget(project, monkeypatch):
+    binaries = project.parent / "fake-bin"
+    binaries.mkdir()
+    executable = binaries / "claude"
+    executable.write_text(
+        f"#!{sys.executable}\nimport sys,json\n"
+        "assert sys.argv[1:]==['auth','status']\nprint(json.dumps({'loggedIn':False}))\nsys.exit(1)\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
+    path = project.parent / "policy.json"
+    policy = json.loads(path.read_text())
+    policy.update(adapter="claude", sandbox="macos")
+    path.write_text(json.dumps(policy))
+    result = invoke(project)
+    assert result.returncode == 2
+    saved, _ = state(project)
+    assert saved["reserved_usd"] == 0
+    assert saved["items"][0]["attempts"] == []
+    assert "authentication unavailable inside" in saved["items"][0]["reason"]
