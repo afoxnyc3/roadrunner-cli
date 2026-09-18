@@ -237,7 +237,7 @@
     "repeated_resume_identical": true,
     "real_agent": false
   },
-  "real_agent_canary": "First run failed auth with $0 actual usage; approved retry authenticated but native Write denied .git worktree paths ($0.1891715 reported). Placement corrected and fixture-qualified; real rerun pending explicit allowance.",
+  "real_agent_canary": "Passed with native Claude Code 2.1.277 from installed wheel: three verified integrations and two expected needs-input outcomes; final tree independently checked; resume identical without new attempts.",
   "real_remote_mutations": "not authorized or performed",
   "recovery_audit": {
     "pre_fix_false_success_regressions": 4,
@@ -246,5 +246,7 @@
     "current_attempt_binding": true,
     "atomic_plan_sync": true
   },
-  "real_canary_evidence": "shipping-real-canary-2026-09-18.json"
+  "real_canary_evidence": "shipping-real-canary-2026-09-18.json",
+  "real_canary_qualified_revision": "d1242d9",
+  "qualification_scope": "Local delivery on macOS. Live remote mutation behavior and other real-worker platforms are not qualified."
 }

@@ -2,7 +2,7 @@
 
 Roadrunner works through a reviewed backlog in an existing Git project. A serial Python controller selects tasks, invokes Claude Code, validates committed changes, and integrates successful work into a dedicated local run branch. Each selected item ends as verified local resolution or an actionable blocker. A model claim, passing tests on an unintegrated branch, or a newly created PR cannot resolve an item.
 
-This branch is a release candidate under qualification. The installed workflow has been demonstrated with fake agents; real Claude and real GitHub mutation qualification are listed separately in [the implementation checklist](docs/shipping-implementation-checklist.md). No release has been published from this work.
+This branch is a release candidate qualified for local delivery on macOS. The installed workflow passed both the failure-injection fixture suite and a bounded native Claude Code canary with verified Git integration. Live GitHub mutations remain unqualified; see [the implementation checklist](docs/shipping-implementation-checklist.md) for evidence and limits. No release has been published from this work.
 
 ## Installed workflow
 
@@ -57,7 +57,7 @@ roadrunner run --resume RUN_UUID
 
 Resume preserves the original deadline and charged attempt/budget allowances, reconciles interrupted integration, and never infers completion from a worker's response. Cancel with Ctrl-C or SIGTERM. The worker group is terminated on cancellation, deadline, and controller pipe loss. Failed worktrees remain for inspection. Terminal blockers require reviewing their next action and explicitly selecting a new run; they are not silently reopened.
 
-Cost accounting conservatively reserves each attempt's native Claude dollar cap before launch; reservations are not refunded after interruption or retries. Missing/error usage telemetry cannot resolve work. Real-provider behavior and authentication still require a canary. The `fixture` adapter is explicitly reported and is only for trusted disposable testing.
+Cost accounting conservatively reserves each attempt's native Claude dollar cap before launch; reservations are not refunded after interruption or retries. Missing/error usage telemetry cannot resolve work. The installed native canary verified authentication, file creation, structured usage telemetry, and completion below the configured caps. This small run does not establish provider hard-cap behavior at exhaustion or compatibility with every Claude version. The `fixture` adapter is explicitly reported and is only for trusted disposable testing.
 
 ## Optional remote delivery
 

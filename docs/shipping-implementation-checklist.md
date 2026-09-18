@@ -6,7 +6,7 @@ Plan: [shipping-plan-2026-09-18.md](shipping-plan-2026-09-18.md).
 - [x] M1: regressions and fixes for hook, state, lifecycle, integration, plans, and wheel assets.
 - [x] M2: authoritative serial supervisor, bounded recovery, isolated validated integration.
 - [x] M3: normalized idempotent intake and explicit remote delivery policy.
-- [ ] M4: installed external-project qualification, failure injection, approved real-agent canary.
+- [x] M4: installed external-project qualification, failure injection, approved real-agent canary (local macOS scope).
 
 ## M0 evidence
 
@@ -83,3 +83,15 @@ Retry `a2807fe1-d0a5-4d1b-83bf-65798c455783` authenticated and made real API cal
 The adapter placement regression failed before the correction and passes afterward. **298 passed, 1 skipped**, Ruff, mypy (21 files), and ShellCheck pass. The rebuilt wheel passed the complete six-item installed fake-agent demonstration at `/private/tmp/rr-installed-worktree-qualified-2026-09-18`, including repair, dependency integration, blockers, and idempotent resume/sync. This is not yet proof of native Write success. Temporary task directories must be retained for recovery; their location is recorded in `run.json`.
 
 M0–M3 remain implemented; M4 remains incomplete. Next proposed real canary: same exact disposable project/plan, three new attempts maximum (one per executable task), $0.33 each/$0.99 total, 120 seconds each/540 seconds total, 30 turns each. This requires explicit approval because the approved task-attempt limits are exhausted and aggregate conservative reservations would rise from $2.66 to $3.65. Actual reported usage to date is $0.1891715. See `/private/tmp/roadrunner-real-canary-2026-09-18/APPROVAL-WORKTREE-RETRY.md`. No release, push, remote PR, issue mutation, or deployment has occurred. Original checkout/changelog remain unchanged.
+
+## M4 complete — installed native local workflow qualified
+
+Approved installed-wheel run `38652973-ecd2-4776-b5ec-fc6a26d1919e` completed in **39.79 seconds** with **three verified resolutions and two expected needs-input outcomes**. Native Claude Code 2.1.277 created the normalization function, a dependent slug function importing it, and an independent greeting function. Each used one attempt with no native permission denials. Reported usage was **$0.1849415**, below the approved $0.99 reservation. Across all three approved runs, reported usage is **$0.374113** and conservative reservations total **$3.65**. Failed historical runs and allowances remain intact.
+
+Qualified implementation commit: `d1242d9`. Wheel SHA-256: `e908a54e55d53f960d2f5d6d205e5f9d236794bdefa669a86afe535ef9de1607`. Each resolved item has passing frozen gates bound to its current attempt and candidate. Independent inspection verified merge parents, ancestry, sequential dependency bases, unchanged gate contents, and all three implementation files in final integration commit `1ad14067a397c15174969b485076ff6070e8f13e`. A separate detached checkout passed the final gate plus explicit imports/assertions for every implementation. Resume returned an identical report and byte-identical controller state without additional attempts. Operator branch/HEAD/tree were unchanged; the target has no remotes.
+
+The full current implementation suite remains **298 passed, 1 skipped**, with Ruff, mypy, ShellCheck, and the installed six-item fixture demonstration passing. Only documentation/evidence changed after this verified implementation. The fixture demonstration covers repair on retry and independent work after an external blocker; crash/recovery, cancellation, conflicts, invalid transitions, gate tampering, actual shell hooks, and repeated synchronization are covered by isolated regression contracts. The native canary covers successful real file operations and integration; it does not substitute for those deliberate failure injections.
+
+Evidence: [real canary](shipping-real-canary-2026-09-18.json), [installed qualification](shipping-evidence-2026-09-18.json). Raw logs, all run states, and the final verification checkout are retained beneath `/private/tmp/roadrunner-real-canary-2026-09-18`; native task worktrees are at the recorded `task_work_root`.
+
+M0–M4 are complete for the authorized local macOS release-candidate scope. Remaining limitations: live GitHub push/PR/check/merge/closure behavior has mocked coverage only; Linux real-worker isolation is unsupported; general worker shell execution and hostile-code read isolation are not claimed; provider hard-cap behavior at exhaustion was not exercised by this below-budget canary. No release, deployment, push, real issue mutation, or remote PR merge occurred. Publishing and live remote qualification require separate authorization. Original project/changelog remain preserved. Next: review the focused local commits and evidence before any separately authorized release action.

@@ -89,7 +89,7 @@
       }
     ]
   },
-  "next_action": "Approve a new one-attempt-per-task canary with relocated worktrees; $0.99 new reservations, $3.65 cumulative reservations. Existing records remain unchanged.",
+  "next_action": "Local macOS release candidate qualified. Review local commits and evidence before separately authorizing any publication or remote mutation.",
   "approved_retry": {
     "run_id": "a2807fe1-d0a5-4d1b-83bf-65798c455783",
     "branch": "refs/heads/roadrunner/run-a2807fe1-d0a5-4d1b-83bf-65798c455783",
@@ -150,5 +150,141 @@
       "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/a2807fe1-d0a5-4d1b-83bf-65798c455783/TASK-001-1-worker.log",
       "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/a2807fe1-d0a5-4d1b-83bf-65798c455783/TASK-003-1-worker.log"
     ]
-  }
+  },
+  "approved_worktree_retry": {
+    "report": {
+      "run_id": "38652973-ecd2-4776-b5ec-fc6a26d1919e",
+      "branch": "refs/heads/roadrunner/run-38652973-ecd2-4776-b5ec-fc6a26d1919e",
+      "fixture": false,
+      "outcome": "finished_with_blockers",
+      "reserved_usd": 0.99,
+      "items": [
+        {
+          "id": "TASK-001",
+          "source_id": null,
+          "source_revision": null,
+          "phase": "resolved",
+          "reason": null,
+          "attempts": 1,
+          "evidence": {
+            "base": "eb0d20fa159a6a7e5158b0a434d8d1897d906d1c",
+            "candidate": "0d6ea8265a74ee5347f29189add70906c9beef5b",
+            "task_commit": "15be07cf5a72a099b674d66aa93ba81a266f5efb",
+            "gate_version": "0e8784b156ab40a63a01374b30eb414c5c0b2a33fdf6c86ad372fd34f4c7e92e",
+            "gates": [
+              {
+                "command": "PYTHONDONTWRITEBYTECODE=1 /private/tmp/rr-m4-installed/bin/python gate.py",
+                "exit_code": 0,
+                "log": "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/38652973-ecd2-4776-b5ec-fc6a26d1919e/TASK-001-1-gate-0.log"
+              }
+            ],
+            "attempt_id": "f9d0cf99-a875-48f3-9bb0-ac1f87ff3a61"
+          }
+        },
+        {
+          "id": "TASK-002",
+          "source_id": null,
+          "source_revision": null,
+          "phase": "resolved",
+          "reason": null,
+          "attempts": 1,
+          "evidence": {
+            "base": "0d6ea8265a74ee5347f29189add70906c9beef5b",
+            "candidate": "94aab4f69348ab924fa9509b981b9616dae562b9",
+            "task_commit": "a2b5e423ef5e9155887b75492eacc07c4969b141",
+            "gate_version": "0e8784b156ab40a63a01374b30eb414c5c0b2a33fdf6c86ad372fd34f4c7e92e",
+            "gates": [
+              {
+                "command": "PYTHONDONTWRITEBYTECODE=1 /private/tmp/rr-m4-installed/bin/python gate.py",
+                "exit_code": 0,
+                "log": "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/38652973-ecd2-4776-b5ec-fc6a26d1919e/TASK-002-1-gate-0.log"
+              }
+            ],
+            "attempt_id": "5747df42-0ef2-481c-8f5d-e2b483c90edf"
+          }
+        },
+        {
+          "id": "TASK-003",
+          "source_id": null,
+          "source_revision": null,
+          "phase": "resolved",
+          "reason": null,
+          "attempts": 1,
+          "evidence": {
+            "base": "94aab4f69348ab924fa9509b981b9616dae562b9",
+            "candidate": "1ad14067a397c15174969b485076ff6070e8f13e",
+            "task_commit": "84bf99713ecfbaea947f56878f299fee000cf6f2",
+            "gate_version": "0e8784b156ab40a63a01374b30eb414c5c0b2a33fdf6c86ad372fd34f4c7e92e",
+            "gates": [
+              {
+                "command": "PYTHONDONTWRITEBYTECODE=1 /private/tmp/rr-m4-installed/bin/python gate.py",
+                "exit_code": 0,
+                "log": "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/38652973-ecd2-4776-b5ec-fc6a26d1919e/TASK-003-1-gate-0.log"
+              }
+            ],
+            "attempt_id": "14bd008f-4faa-48c0-9897-dbfe3db1ded3"
+          }
+        },
+        {
+          "id": "TASK-004",
+          "source_id": null,
+          "source_revision": null,
+          "phase": "needs_input",
+          "reason": "Specify goal, acceptance criteria, and allowed files in the reviewed plan.",
+          "attempts": 0,
+          "evidence": null
+        },
+        {
+          "id": "TASK-005",
+          "source_id": null,
+          "source_revision": null,
+          "phase": "needs_input",
+          "reason": "Specify goal, acceptance criteria, and allowed files in the reviewed plan.",
+          "attempts": 0,
+          "evidence": null
+        }
+      ]
+    },
+    "implementation_revision": "d1242d9",
+    "wheel_sha256": "e908a54e55d53f960d2f5d6d205e5f9d236794bdefa669a86afe535ef9de1607",
+    "reported_cost_usd": 0.18494149999999998,
+    "reserved_usd": 0.99,
+    "attempts": [
+      {
+        "task": "TASK-001",
+        "session_id": "5d086955-8822-4d04-95bc-6b0df5787c9d",
+        "cost_usd": 0.0619185,
+        "seconds": 14.052124977111816,
+        "permission_denials": [],
+        "worker_log": "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/38652973-ecd2-4776-b5ec-fc6a26d1919e/TASK-001-1-worker.log"
+      },
+      {
+        "task": "TASK-002",
+        "session_id": "bb4b8a03-beb4-4ecc-8c6d-9425cc44d996",
+        "cost_usd": 0.0620975,
+        "seconds": 13.238160848617554,
+        "permission_denials": [],
+        "worker_log": "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/38652973-ecd2-4776-b5ec-fc6a26d1919e/TASK-002-1-worker.log"
+      },
+      {
+        "task": "TASK-003",
+        "session_id": "903c6698-68dc-4c2d-b721-74d002681a60",
+        "cost_usd": 0.060925499999999994,
+        "seconds": 12.204911231994629,
+        "permission_denials": [],
+        "worker_log": "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner/38652973-ecd2-4776-b5ec-fc6a26d1919e/TASK-003-1-worker.log"
+      }
+    ],
+    "final_commit": "1ad14067a397c15174969b485076ff6070e8f13e",
+    "final_gate_exit_code": 0,
+    "verification_worktree": "/private/tmp/roadrunner-real-canary-2026-09-18/final-integrated-verification",
+    "operator_head": "eb0d20fa159a6a7e5158b0a434d8d1897d906d1c",
+    "operator_preserved": true,
+    "no_remotes": true,
+    "resume_identical_without_new_attempts": true,
+    "elapsed_seconds": 39.78966498374939,
+    "task_work_root": "/private/var/folders/kk/x_9j34mn7vv19fdj4s292p180000gn/T/roadrunner-work-38652973-ecd2-4776-b5ec-fc6a26d1919e-sanzwy5q"
+  },
+  "aggregate_reported_cost_usd": 0.374113,
+  "aggregate_reserved_usd": 3.65
 }
