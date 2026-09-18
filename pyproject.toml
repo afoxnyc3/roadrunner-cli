@@ -66,3 +66,6 @@ python_version = "3.10"
 ignore_missing_imports = true
 warn_return_any = true
 warn_unused_ignores = true
+
+[tool.setuptools.package-data]
+roadrunner = ["scaffold/hooks/*", "scaffold/.claude/settings.json"]

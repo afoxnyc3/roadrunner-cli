@@ -150,14 +150,15 @@ def write_state(
     preserve the persisted value (so cmd_check_stop and cmd_reset_iteration
     don't accidentally erase the SessionStart capture), and a string sets it.
     """
+    preserved: dict = {}
     existing_session_iter = 0
     existing_session_cost = 0.0
     existing_session_id: str | None = None
-    needs_existing = session_iteration is None or session_cost_usd is None or last_session_id is None
-    if needs_existing and STATE_FILE.exists():
+    if STATE_FILE.exists():
         try:
             data = json.loads(STATE_FILE.read_text())
             if isinstance(data, dict):
+                preserved = data
                 existing_session_iter = int(data.get("session_iteration", 0))
                 existing_session_cost = float(data.get("session_cost_usd", 0.0))
                 raw_id = data.get("last_session_id")
@@ -171,6 +172,7 @@ def write_state(
     effective_session_id = existing_session_id if last_session_id is None else last_session_id
 
     state: dict = {
+        **preserved,
         "schema_version": STATE_SCHEMA_VERSION,
         "current_task_id": current_task_id,
         "iteration": iteration,
