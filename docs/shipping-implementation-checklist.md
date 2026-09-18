@@ -4,7 +4,7 @@ Plan: [shipping-plan-2026-09-18.md](shipping-plan-2026-09-18.md).
 
 - [x] M0: preserve operator checkout; reconcile upstream; install dependencies; verify baseline.
 - [x] M1: regressions and fixes for hook, state, lifecycle, integration, plans, and wheel assets.
-- [ ] M2: authoritative serial supervisor, bounded recovery, isolated validated integration.
+- [x] M2: authoritative serial supervisor, bounded recovery, isolated validated integration.
 - [ ] M3: normalized idempotent intake and explicit remote delivery policy.
 - [ ] M4: installed external-project qualification, failure injection, approved real-agent canary.
 
@@ -23,3 +23,11 @@ Seven subprocess regressions failed before the fixes and passed afterward. Addit
 A built wheel installed into `/private/tmp/rr-m1-installed` successfully initialized `/private/tmp/rr-m1-external`, including actual hook scripts and `.claude/settings.json`, outside any source checkout. Existing initialization preserves files already present.
 
 Legacy lifecycle now rejects unstarted completion, unresolved dependencies, empty gates, missing task branches, and failed integration; branch setup fails closed. State writes preserve metadata and a new start resets only its retry allowance. These are stabilization fixes: agent-writable legacy YAML remains a trust limitation. M2 must provide frozen controller-owned specifications, attempt identity, integration revision evidence, recovery, and constrained execution before making autonomous resolution claims.
+
+## M2 evidence and supported boundary
+
+`roadrunner run --project ... --plan ... --policy ...` drains a serial frozen plan into a dedicated local integration ref, preserving the operator checkout. `--resume UUID` reconciles persisted integration intent and retains consumed attempts, reserved cost allowance, and the original run deadline. Completion requires exact candidate commit validation followed by a compare-and-swap ref update. Logs retain full worker and gate output. No model sentinel or legacy YAML status releases dependencies.
+
+**264 passed, 1 skipped**, including real subprocess tests for dependent tasks, validation repair, independent work after ambiguity, policy/gate tampering, invalid transitions, timeout, cancellation, SIGKILL recovery, interrupted integration reconciliation, changed integration refs, and operator dirty-file preservation. The macOS sandbox test proves denied writes to controller data and gate files, and an external-project fake-agent run succeeds under that sandbox. A pipe watchdog kills the worker process group if the controller dies.
+
+Current supported real-worker host: macOS with working `sandbox-exec`. Unsupported hosts fail closed. The fixture adapter is explicitly marked in reports and only for trusted disposable tests. Claude's tool set excludes shell execution; controller-owned validation runs shell commands under the write sandbox. Agent cost is bounded by per-attempt native caps with conservative non-refundable reservations across retries/restarts. Real-Claude compatibility/authentication and usage enforcement remain unqualified pending the approved M4 canary. Adapter flags were checked against installed Claude 2.1.277 help and the official CLI reference. Next: normalized source intake and remote delivery policy.

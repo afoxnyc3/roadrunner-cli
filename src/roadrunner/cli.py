@@ -2477,6 +2477,9 @@ def _build_task_brief(task: Task, iteration: int, max_iter: int, resume: bool = 
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "run":
+        from .supervisor import main as run_main
+        sys.exit(run_main(sys.argv[2:]))
     parser = argparse.ArgumentParser(description="Roadmap Loop Controller")
     sub = parser.add_subparsers(dest="command")
 
