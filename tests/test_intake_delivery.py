@@ -220,3 +220,55 @@ def test_issue_closure_requires_matching_revision_and_verified_merge(project, mo
         result = delivery.deliver(project, saved["id"], policy, True)
         assert result["closures"][0]["disposition"] == "closed_after_verified_merge"
         assert row["state"] == "closed"
+
+
+def test_delivery_rejects_corrupt_local_gate_before_remote_access(project, monkeypatch):
+    assert invoke(project).returncode == 0
+    saved, path = state(project)
+    saved["items"][0]["evidence"]["gates"][0]["command"] = "true"
+    delivery.atomic(path, saved)
+
+    def forbidden(*args):
+        pytest.fail("Corrupt local evidence reached remote access")
+
+    monkeypatch.setattr(delivery, "gh", forbidden)
+    monkeypatch.setattr(delivery, "mutate", forbidden)
+    with pytest.raises(ValueError, match="frozen validation"):
+        delivery.deliver(project, saved["id"], {"repository": "example/repo", "base": "main"}, True)
+
+
+def test_sync_rejects_modified_frozen_plan(project):
+    result = intake.synchronize(project, intake.local_items(project.parent / "plan.yaml"), {})
+    path = __import__("pathlib").Path(result["plan"])
+    data = yaml.safe_load(path.read_text())
+    data["tasks"][0]["files_expected"] = ["unreviewed"]
+    path.write_text(yaml.safe_dump(data))
+    with pytest.raises(ValueError, match="Frozen plan"):
+        intake.synchronize(project, intake.local_items(project.parent / "plan.yaml"), {})
+    attempted = invoke(project, "--plan", str(path))
+    assert attempted.returncode == 2
+    assert "Frozen plan" in attempted.stderr
+
+
+def test_sync_recovers_when_registry_write_is_interrupted(project, monkeypatch):
+    path = project.parent / "plan.yaml"
+    first = intake.synchronize(project, intake.local_items(path), {})
+    data = yaml.safe_load(path.read_text())
+    data["tasks"][0]["goal"] = "Updated requirement"
+    path.write_text(yaml.safe_dump(data))
+    original = intake.atomic
+
+    def interrupted(destination, value):
+        if destination.name == "sources.json":
+            raise OSError("simulated interruption before registry commit")
+        original(destination, value)
+
+    monkeypatch.setattr(intake, "atomic", interrupted)
+    with pytest.raises(OSError):
+        intake.synchronize(project, intake.local_items(path), {})
+    monkeypatch.setattr(intake, "atomic", original)
+    recovered = intake.synchronize(project, intake.local_items(path), {})
+    assert recovered == intake.synchronize(project, intake.local_items(path), {})
+    registry = json.loads((intake.location(project) / "sources.json").read_text())
+    assert len(registry) == 1
+    assert next(iter(registry.values()))["history"] == [first["items"][0]["revision"]]

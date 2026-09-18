@@ -134,8 +134,14 @@ def synchronize(project, rows, rules):
         plans = control / "plans"
         plans.mkdir(exist_ok=True)
         destination = plans / (plan_id + ".yaml")
-        if not destination.exists():
-            destination.write_text(yaml.safe_dump(plan, sort_keys=False))
+        if destination.exists():
+            if yaml.safe_load(destination.read_text()) != plan:
+                raise ValueError(
+                    "Frozen plan contents differ from their recorded identity; restore the plan or resynchronize to a new file"
+                )
+        else:
+            # JSON is valid YAML; reuse the fsync + atomic replace persistence contract.
+            atomic(destination, plan)
         atomic(registry_path, registry)
         return dict(
             plan=str(destination),

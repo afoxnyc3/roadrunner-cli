@@ -1,9 +1,9 @@
 {
   "candidate": "1.1.0rc1",
   "wheel": "/private/tmp/rr-m4-final-wheel/roadrunner_cli-1.1.0rc1-py3-none-any.whl",
-  "sha256": "68eaf0d152a0a21dc58577cc7c61a81d0b23578f0c68d568d126b29d0f72fe84",
+  "sha256": "ba242bc61df4ee2b9a52dd82d8d4368e847264dc480e92e4327656be8b3a9e06",
   "checks": {
-    "pytest_passed": 285,
+    "pytest_passed": 295,
     "pytest_skipped": 1,
     "ruff": "pass",
     "mypy": "pass (21 files)",
@@ -46,17 +46,17 @@
   },
   "installed_demonstration": {
     "installed_executable": "/private/tmp/rr-m4-installed/bin/roadrunner",
-    "external_project": "/private/tmp/rr-installed-release-candidate-2026-09-18/external-project",
+    "external_project": "/private/tmp/rr-installed-recovery-qualified-2026-09-18/external-project",
     "doctor": {
       "outcome": "ready_for_canary",
       "checks": [
         {
           "check": "git",
-          "value": "830fad1bf7d4dcf2bbbeee4203e211fa320450c2"
+          "value": "67c66db81eec0091403748a7cbfc208ed38b0cf6"
         },
         {
           "check": "state_storage",
-          "value": "/private/tmp/rr-installed-release-candidate-2026-09-18/external-project/.git/roadrunner",
+          "value": "/private/tmp/rr-installed-recovery-qualified-2026-09-18/external-project/.git/roadrunner",
           "writable": true
         },
         {
@@ -75,42 +75,42 @@
       ]
     },
     "source_plan": {
-      "plan": "/private/tmp/rr-installed-release-candidate-2026-09-18/external-project/.git/roadrunner/plans/5e2e9ec045a72b600c47524ec9a4eb98ca7ff26e0d30c77579d401922104e579.yaml",
-      "plan_id": "5e2e9ec045a72b600c47524ec9a4eb98ca7ff26e0d30c77579d401922104e579",
+      "plan": "/private/tmp/rr-installed-recovery-qualified-2026-09-18/external-project/.git/roadrunner/plans/b44a7956d5d93ef30fd93927a8e6c7ea87d2e23180db7b8fc58c229005c498a8.yaml",
+      "plan_id": "b44a7956d5d93ef30fd93927a8e6c7ea87d2e23180db7b8fc58c229005c498a8",
       "selected": 6,
       "items": [
         {
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-001",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-001",
           "revision": "20cdf5709d7842e24e28889613f1e2819b4ae2834ca8389a09a4eedd0a2f084c",
           "disposition": "ready",
           "next_action": null
         },
         {
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-002",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-002",
           "revision": "a87b73ab8c212c6e4a1dd393580fd3971ed14d765b219d7d8a2c742336661084",
           "disposition": "ready",
           "next_action": null
         },
         {
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-003",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-003",
           "revision": "aa93b897d4baef848baae0a527b2740e80c526a22e0837c4008bbebe6b33e3ed",
           "disposition": "ready",
           "next_action": null
         },
         {
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-004",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-004",
           "revision": "55b95de879141ecd1ee7dd487bb0e455696ce8cc68bc620c7225a6ad21eee12d",
           "disposition": "needs_input",
           "next_action": "Provide goal, acceptance criteria, and file scope in the reviewed intake rules."
         },
         {
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-005",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-005",
           "revision": "70e58bb55a2634d408a0701cbaeabcf52c11c224d83c4cd1a0cca72b0ed00c7a",
           "disposition": "ready",
           "next_action": null
         },
         {
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-006",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-006",
           "revision": "ba0e10df274b99ffe32c3e0486a0fe11ef877ea221675f006df635f103ca94fb",
           "disposition": "ready",
           "next_action": null
@@ -118,78 +118,81 @@
       ]
     },
     "report": {
-      "run_id": "5c61906c-261d-4a5e-a8bd-0429ff826933",
-      "branch": "refs/heads/roadrunner/run-5c61906c-261d-4a5e-a8bd-0429ff826933",
+      "run_id": "7594e8a4-0555-4a60-a18c-95c360748c85",
+      "branch": "refs/heads/roadrunner/run-7594e8a4-0555-4a60-a18c-95c360748c85",
       "fixture": true,
       "outcome": "finished_with_blockers",
       "reserved_usd": 7.0,
       "items": [
         {
           "id": "TASK-001",
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-001",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-001",
           "source_revision": "20cdf5709d7842e24e28889613f1e2819b4ae2834ca8389a09a4eedd0a2f084c",
           "phase": "resolved",
           "reason": null,
           "attempts": 1,
           "evidence": {
-            "base": "830fad1bf7d4dcf2bbbeee4203e211fa320450c2",
-            "candidate": "af50f7f6ef7e537f6892ac28cf0c2055625813e2",
-            "task_commit": "eb3598db4ef4ad1576bb4b5745f97dab7c9b1766",
-            "gate_version": "664bf00c41d64cc96a2d85482acc6cfd15496239fc550a9bc8a1848901394ff9",
+            "base": "67c66db81eec0091403748a7cbfc208ed38b0cf6",
+            "candidate": "e8a4202fb379128a7abef1da7370d0f4db2f0487",
+            "task_commit": "4c3c65d81402be991f2d64ab154f93fc88b09361",
+            "gate_version": "7785a0ea25406fa07240e88732f30af12ca2a73eff8aa716e8514e5701f88ae2",
             "gates": [
               {
                 "command": "/private/tmp/rr-m4-installed/bin/python gate.py",
                 "exit_code": 0,
-                "log": "/private/tmp/rr-installed-release-candidate-2026-09-18/external-project/.git/roadrunner/5c61906c-261d-4a5e-a8bd-0429ff826933/TASK-001-1-gate-0.log"
+                "log": "/private/tmp/rr-installed-recovery-qualified-2026-09-18/external-project/.git/roadrunner/7594e8a4-0555-4a60-a18c-95c360748c85/TASK-001-1-gate-0.log"
               }
-            ]
+            ],
+            "attempt_id": "befbc304-b3aa-40c8-913a-83734920566c"
           }
         },
         {
           "id": "TASK-002",
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-002",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-002",
           "source_revision": "a87b73ab8c212c6e4a1dd393580fd3971ed14d765b219d7d8a2c742336661084",
           "phase": "resolved",
           "reason": null,
           "attempts": 1,
           "evidence": {
-            "base": "af50f7f6ef7e537f6892ac28cf0c2055625813e2",
-            "candidate": "9e961af1564a77df90e3d3c71760eddf0d9c5d64",
-            "task_commit": "8b0743530d6d8154138d74c40a2178cb6419d7e9",
-            "gate_version": "664bf00c41d64cc96a2d85482acc6cfd15496239fc550a9bc8a1848901394ff9",
+            "base": "e8a4202fb379128a7abef1da7370d0f4db2f0487",
+            "candidate": "4086d45b697519cb74f5030b1091c48996b00b7f",
+            "task_commit": "6240704e1b45e2bebca4fc86c8e76f12814dd1d9",
+            "gate_version": "7785a0ea25406fa07240e88732f30af12ca2a73eff8aa716e8514e5701f88ae2",
             "gates": [
               {
                 "command": "/private/tmp/rr-m4-installed/bin/python gate.py",
                 "exit_code": 0,
-                "log": "/private/tmp/rr-installed-release-candidate-2026-09-18/external-project/.git/roadrunner/5c61906c-261d-4a5e-a8bd-0429ff826933/TASK-002-1-gate-0.log"
+                "log": "/private/tmp/rr-installed-recovery-qualified-2026-09-18/external-project/.git/roadrunner/7594e8a4-0555-4a60-a18c-95c360748c85/TASK-002-1-gate-0.log"
               }
-            ]
+            ],
+            "attempt_id": "c1b24a50-4afa-410a-918c-61705f702e39"
           }
         },
         {
           "id": "TASK-003",
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-003",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-003",
           "source_revision": "aa93b897d4baef848baae0a527b2740e80c526a22e0837c4008bbebe6b33e3ed",
           "phase": "resolved",
           "reason": null,
           "attempts": 2,
           "evidence": {
-            "base": "9e961af1564a77df90e3d3c71760eddf0d9c5d64",
-            "candidate": "30cc7531206d44d8f12e6ee9aebbede05257fe77",
-            "task_commit": "96c95f7e922d03a0fc52412d2756bc9b04f0c724",
-            "gate_version": "664bf00c41d64cc96a2d85482acc6cfd15496239fc550a9bc8a1848901394ff9",
+            "base": "4086d45b697519cb74f5030b1091c48996b00b7f",
+            "candidate": "15f8e6d6c33b8ad050f48a0a64a5be34079e9ade",
+            "task_commit": "ba1db898f461032919d45d22eeda31e5a6cf1231",
+            "gate_version": "7785a0ea25406fa07240e88732f30af12ca2a73eff8aa716e8514e5701f88ae2",
             "gates": [
               {
                 "command": "/private/tmp/rr-m4-installed/bin/python gate.py",
                 "exit_code": 0,
-                "log": "/private/tmp/rr-installed-release-candidate-2026-09-18/external-project/.git/roadrunner/5c61906c-261d-4a5e-a8bd-0429ff826933/TASK-003-2-gate-0.log"
+                "log": "/private/tmp/rr-installed-recovery-qualified-2026-09-18/external-project/.git/roadrunner/7594e8a4-0555-4a60-a18c-95c360748c85/TASK-003-2-gate-0.log"
               }
-            ]
+            ],
+            "attempt_id": "be3baa15-750d-42a9-b0ba-6fb53348692a"
           }
         },
         {
           "id": "TASK-004",
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-004",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-004",
           "source_revision": "55b95de879141ecd1ee7dd487bb0e455696ce8cc68bc620c7225a6ad21eee12d",
           "phase": "needs_input",
           "reason": "Provide goal, acceptance criteria, and file scope in the reviewed intake rules.",
@@ -198,7 +201,7 @@
         },
         {
           "id": "TASK-005",
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-005",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-005",
           "source_revision": "70e58bb55a2634d408a0701cbaeabcf52c11c224d83c4cd1a0cca72b0ed00c7a",
           "phase": "blocked",
           "reason": "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy.",
@@ -207,23 +210,24 @@
         },
         {
           "id": "TASK-006",
-          "source_id": "file:///private/tmp/rr-installed-release-candidate-2026-09-18/roadmap.yaml#TASK-006",
+          "source_id": "file:///private/tmp/rr-installed-recovery-qualified-2026-09-18/roadmap.yaml#TASK-006",
           "source_revision": "ba0e10df274b99ffe32c3e0486a0fe11ef877ea221675f006df635f103ca94fb",
           "phase": "resolved",
           "reason": null,
           "attempts": 1,
           "evidence": {
-            "base": "30cc7531206d44d8f12e6ee9aebbede05257fe77",
-            "candidate": "eb06640815389843075858186da5a5ce47fa9be1",
-            "task_commit": "b29366f410aaf22f645d3811abbbba4a849be215",
-            "gate_version": "664bf00c41d64cc96a2d85482acc6cfd15496239fc550a9bc8a1848901394ff9",
+            "base": "15f8e6d6c33b8ad050f48a0a64a5be34079e9ade",
+            "candidate": "94b3a56ffc5bb98b59374e5ed93e65e7329d960c",
+            "task_commit": "37943c0ca97a9142e3fbec65d498ca21f15f58c1",
+            "gate_version": "7785a0ea25406fa07240e88732f30af12ca2a73eff8aa716e8514e5701f88ae2",
             "gates": [
               {
                 "command": "/private/tmp/rr-m4-installed/bin/python gate.py",
                 "exit_code": 0,
-                "log": "/private/tmp/rr-installed-release-candidate-2026-09-18/external-project/.git/roadrunner/5c61906c-261d-4a5e-a8bd-0429ff826933/TASK-006-1-gate-0.log"
+                "log": "/private/tmp/rr-installed-recovery-qualified-2026-09-18/external-project/.git/roadrunner/7594e8a4-0555-4a60-a18c-95c360748c85/TASK-006-1-gate-0.log"
               }
-            ]
+            ],
+            "attempt_id": "ef444684-4edb-4043-b555-74a80aa9307f"
           }
         }
       ]
@@ -234,5 +238,12 @@
     "real_agent": false
   },
   "real_agent_canary": "awaiting explicit approval",
-  "real_remote_mutations": "not authorized or performed"
+  "real_remote_mutations": "not authorized or performed",
+  "recovery_audit": {
+    "pre_fix_false_success_regressions": 4,
+    "frozen_plan_tampering_reproduced": true,
+    "all_gate_results_and_commands_verified": true,
+    "current_attempt_binding": true,
+    "atomic_plan_sync": true
+  }
 }

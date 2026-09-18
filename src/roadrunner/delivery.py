@@ -15,7 +15,7 @@ import sys
 import uuid
 
 from .intake import gh
-from .supervisor import atomic, digest, git, location, locked
+from .supervisor import atomic, digest, git, location, locked, verify_evidence
 
 
 def mutate(argv):
@@ -55,6 +55,10 @@ def deliver(project, run_id, policy, execute=False):
         state = json.loads((directory / "run.json").read_text())
         if any(item["phase"] != "resolved" for item in state["items"]):
             raise ValueError("All selected items must have verified local integration before remote delivery")
+        if digest(state["policy"]) != state["gate_version"]:
+            raise ValueError("Frozen run policy hash mismatch")
+        for item in state["items"]:
+            verify_evidence(project, state, item)
         head = git(project, "rev-parse", state["branch"])
         candidates = [item["evidence"]["candidate"] for item in state["items"]]
         if head not in candidates:

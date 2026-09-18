@@ -348,3 +348,53 @@ def test_claude_adapter_structured_output_ignores_stderr(project, monkeypatch):
     assert attempt["session_id"] == "fixture-session"
     assert attempt["cost_usd"] == 0.1
     assert "diagnostic warning" in Path(attempt["worker_stderr"]).read_text()
+
+
+@pytest.mark.parametrize("damage", ["gate_version", "missing_gates", "wrong_command", "failed_gate"])
+def test_interrupted_integration_rechecks_entire_gate(project, damage):
+    assert invoke(project).returncode == 0
+    saved, path = state(project)
+    item = saved["items"][0]
+    item["phase"] = "integrating"
+    evidence = item["evidence"]
+    runner.git(project, "update-ref", saved["branch"], evidence["base"])
+    if damage == "gate_version":
+        evidence["gate_version"] = "stale-policy"
+    elif damage == "missing_gates":
+        evidence["gates"] = []
+    elif damage == "wrong_command":
+        evidence["gates"][0]["command"] = "true"
+    else:
+        evidence["gates"][0]["exit_code"] = 1
+    runner.atomic(path, saved)
+    result = invoke(project, "--resume", saved["id"])
+    assert result.returncode == 2, result.stdout + result.stderr
+    assert state(project)[0]["items"][0]["phase"] == "blocked"
+    assert runner.git(project, "rev-parse", saved["branch"]) == evidence["base"]
+
+
+@pytest.mark.parametrize("phase", ["resolved", "integrating"])
+def test_stale_attempt_evidence_cannot_release_work(project, phase):
+    assert invoke(project).returncode == 0
+    saved, path = state(project)
+    item = saved["items"][0]
+    item["phase"] = phase
+    item["evidence"]["attempt_id"] = "previous-attempt"
+    runner.atomic(path, saved)
+    result = invoke(project, "--resume", saved["id"])
+    assert result.returncode == 2
+    assert "current attempt" in json.loads(result.stdout)["items"][0]["reason"]
+
+
+def test_reconcile_valid_intent_before_ref_update(project):
+    assert invoke(project).returncode == 0
+    saved, path = state(project)
+    item = saved["items"][0]
+    item["phase"] = "integrating"
+    runner.git(project, "update-ref", saved["branch"], item["evidence"]["base"])
+    runner.atomic(path, saved)
+    result = invoke(project, "--resume", saved["id"])
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert runner.git(project, "rev-parse", saved["branch"]) == item["evidence"]["candidate"]
+    assert state(project)[0]["reserved_usd"] == saved["reserved_usd"]
+    assert len(state(project)[0]["items"][0]["attempts"]) == 1

@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import re
 from pathlib import Path
 import shutil
 import signal
@@ -91,10 +92,12 @@ def relative_path(value):
     return path.as_posix()
 
 
-def load_plan(path: Path, policy: dict) -> list[dict]:
+def load_plan(path: Path, policy: dict, expected_digest=None) -> list[dict]:
     from .cli import validate_plan, validate_task_schema
 
     document = yaml.safe_load(path.read_text())
+    if expected_digest is not None and digest(document) != expected_digest:
+        raise ValueError("Frozen plan contents differ from the selected source revision; restore or resynchronize the plan")
     tasks = document.get("tasks") if isinstance(document, dict) else None
     if not isinstance(tasks, list) or not tasks:
         raise ValueError("Selected plan must contain a nonempty tasks list")
@@ -185,9 +188,7 @@ def execute(command, work, scratch, policy, deadline, log, env, network=False, s
     command = sandbox_command(command, work, scratch, policy, network)
     command = [sys.executable, "-I", str(Path(__file__).with_name("process_guard.py")), *command]
     with log.open("wb") as output, stderr_log.open("wb") if stderr_log else nullcontext(subprocess.STDOUT) as error:
-        process = subprocess.Popen(
-            command, cwd=work, env=env, stdout=output, stderr=error, stdin=subprocess.PIPE, start_new_session=True
-        )
+        process = subprocess.Popen(command, cwd=work, env=env, stdout=output, stderr=error, stdin=subprocess.PIPE, start_new_session=True)
         try:
             while process.poll() is None:
                 if time.time() >= deadline:
@@ -274,33 +275,50 @@ def checkpoint(directory, state):
     atomic(directory / "run.json", state)
 
 
+def verify_evidence(project, state, item):
+    """Validate the complete persisted gate before replaying any integration intent."""
+    evidence = item.get("evidence", {})
+    if evidence.get("gate_version") != state["gate_version"]:
+        raise ValueError("Integration evidence belongs to a different gate version")
+    gates = evidence.get("gates")
+    commands = state["policy"]["validation_commands"]
+    if not isinstance(gates, list) or len(gates) != len(commands) or not commands:
+        raise ValueError("Integration evidence is missing required gate results")
+    for gate, command in zip(gates, commands):
+        if not isinstance(gate, dict) or gate.get("command") != command or type(gate.get("exit_code")) is not int or gate["exit_code"] != 0:
+            raise ValueError("Integration evidence does not prove the frozen validation commands passed")
+    attempts = item.get("attempts", [])
+    if not attempts or evidence.get("attempt_id") != attempts[-1].get("id") or evidence.get("base") != attempts[-1].get("base"):
+        raise ValueError("Integration evidence does not belong to the current attempt")
+    for name in ("base", "task_commit", "candidate"):
+        revision = evidence.get(name)
+        if not isinstance(revision, str) or not re.fullmatch(r"(?:[a-f0-9]{40}|[a-f0-9]{64})", revision):
+            raise ValueError(f"Invalid integration {name} revision")
+        if git(project, "cat-file", "-t", revision) != "commit":
+            raise ValueError(f"Integration {name} is not a commit")
+    git(project, "merge-base", "--is-ancestor", evidence["base"], evidence["task_commit"])
+    git(project, "merge-base", "--is-ancestor", evidence["task_commit"], evidence["candidate"])
+    return evidence
+
+
 def reconcile(project, directory, state):
     for item in state["items"]:
-        if item["phase"] == "resolved":
-            evidence = item.get("evidence", {})
+        if item["phase"] in ("resolved", "integrating"):
             try:
-                if (
-                    evidence.get("gate_version") != state["gate_version"]
-                    or not evidence.get("gates")
-                    or any(gate.get("exit_code") != 0 for gate in evidence["gates"])
-                ):
-                    raise ValueError("Missing or invalid gate evidence")
-                git(project, "merge-base", "--is-ancestor", evidence["task_commit"], evidence["candidate"])
-                git(project, "merge-base", "--is-ancestor", evidence["candidate"], state["branch"])
+                evidence = verify_evidence(project, state, item)
+                if item["phase"] == "resolved":
+                    git(project, "merge-base", "--is-ancestor", evidence["candidate"], state["branch"])
+                    continue
+                current = git(project, "rev-parse", state["branch"])
+                if current == evidence["base"]:
+                    git(project, "update-ref", state["branch"], evidence["candidate"], current)
+                elif current != evidence["candidate"]:
+                    raise ValueError("Integration intent no longer matches branch")
+                transition(item, "resolved")
             except (ValueError, KeyError) as exc:
-                # An external ref rewrite revokes current delivery, retaining historical evidence.
+                # External ref rewrites or corrupt intents revoke delivery, retaining evidence.
                 item["phase"] = "blocked"
-                item["reason"] = f"Previously integrated evidence is no longer valid: {exc}. Reconcile the integration branch."
-        elif item["phase"] == "integrating":
-            evidence = item.get("evidence", {})
-            current = git(project, "rev-parse", state["branch"])
-            if current == evidence.get("candidate") and evidence.get("gate_version") == state["gate_version"]:
-                transition(item, "resolved")
-            elif current == evidence.get("base") and evidence.get("candidate"):
-                git(project, "update-ref", state["branch"], evidence["candidate"], current)
-                transition(item, "resolved")
-            else:
-                transition(item, "blocked", "Integration intent no longer matches branch. Inspect evidence and reconcile branch.")
+                item["reason"] = f"Integration evidence is no longer valid: {exc}. Reconcile the integration branch and gate evidence."
         elif item["phase"] in ("running", "validating"):
             # Charged attempts and reserved budget survive crashes. Never infer success.
             work = directory / ("work-" + item["task"]["id"])
@@ -467,7 +485,12 @@ def drive(project, directory, state):
             if changed_paths(integration) or git(integration, "rev-parse", "HEAD") != candidate:
                 raise ValueError("Validation changed candidate contents; clean build artifacts and rerun")
             item["evidence"] = dict(
-                base=base, candidate=candidate, task_commit=task_commit, gate_version=state["gate_version"], gates=gate_results
+                base=base,
+                candidate=candidate,
+                task_commit=task_commit,
+                gate_version=state["gate_version"],
+                gates=gate_results,
+                attempt_id=attempt["id"],
             )
             failure_category = "integration"
             transition(item, "integrating")
@@ -542,7 +565,9 @@ def run(args):
             if not args.plan or not args.policy:
                 raise ValueError("A reviewed --plan and --policy are required")
             policy = load_policy(Path(args.policy).resolve())
-            tasks = load_plan(Path(args.plan).resolve(), policy)
+            plan_path = Path(args.plan).resolve()
+            expected_digest = plan_path.stem if plan_path.parent == control / "plans" else None
+            tasks = load_plan(plan_path, policy, expected_digest)
             run_id = str(uuid.uuid4())
             directory = control / run_id
             directory.mkdir()
