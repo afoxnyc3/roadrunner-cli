@@ -2477,6 +2477,15 @@ def _build_task_brief(task: Task, iteration: int, max_iter: int, resume: bool = 
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "doctor":
+        from .doctor import main as doctor_main
+        sys.exit(doctor_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "deliver":
+        from .delivery import main as delivery_main
+        sys.exit(delivery_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "sync":
+        from .intake import main as sync_main
+        sys.exit(sync_main(sys.argv[2:]))
     if len(sys.argv) > 1 and sys.argv[1] == "run":
         from .supervisor import main as run_main
         sys.exit(run_main(sys.argv[2:]))

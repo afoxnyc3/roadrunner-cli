@@ -5,7 +5,7 @@ Plan: [shipping-plan-2026-09-18.md](shipping-plan-2026-09-18.md).
 - [x] M0: preserve operator checkout; reconcile upstream; install dependencies; verify baseline.
 - [x] M1: regressions and fixes for hook, state, lifecycle, integration, plans, and wheel assets.
 - [x] M2: authoritative serial supervisor, bounded recovery, isolated validated integration.
-- [ ] M3: normalized idempotent intake and explicit remote delivery policy.
+- [x] M3: normalized idempotent intake and explicit remote delivery policy.
 - [ ] M4: installed external-project qualification, failure injection, approved real-agent canary.
 
 ## M0 evidence
@@ -31,3 +31,11 @@ Legacy lifecycle now rejects unstarted completion, unresolved dependencies, empt
 **264 passed, 1 skipped**, including real subprocess tests for dependent tasks, validation repair, independent work after ambiguity, policy/gate tampering, invalid transitions, timeout, cancellation, SIGKILL recovery, interrupted integration reconciliation, changed integration refs, and operator dirty-file preservation. The macOS sandbox test proves denied writes to controller data and gate files, and an external-project fake-agent run succeeds under that sandbox. A pipe watchdog kills the worker process group if the controller dies.
 
 Current supported real-worker host: macOS with working `sandbox-exec`. Unsupported hosts fail closed. The fixture adapter is explicitly marked in reports and only for trusted disposable tests. Claude's tool set excludes shell execution; controller-owned validation runs shell commands under the write sandbox. Agent cost is bounded by per-attempt native caps with conservative non-refundable reservations across retries/restarts. Real-Claude compatibility/authentication and usage enforcement remain unqualified pending the approved M4 canary. Adapter flags were checked against installed Claude 2.1.277 help and the official CLI reference. Next: normalized source intake and remote delivery policy.
+
+## M3 evidence and remote qualification limits
+
+`sync` supports local YAML, Markdown with one fenced YAML task block, and read-only GitHub issue selection by number/label/milestone. Stable source IDs and revision hashes produce idempotent frozen plans. Edits/reopens require explicit revision approval; external closure never becomes controller resolution. Issue text cannot supply executable gates. Missing acceptance/scope becomes actionable `needs_input`.
+
+`deliver` prepares by default. Execution requires separate explicit push/PR/merge/closure capabilities. It rediscovers PRs on retry, binds checks to exact head/base, requires remote merge ancestry and an identical validated tree, and verifies source revision and closure. Local resolution and remote delivery phases remain separate.
+
+Full suite: **278 passed, 1 skipped**. Fourteen new intake/delivery contracts cover repeated/edited/reopened sources, Markdown IDs, frozen execution, no-mutation preparation, push failure, missing/failing/duplicate checks, PR-only non-resolution, rediscovery, and verified merge. GitHub contracts use mocks; no real push, PR, merge, or issue mutation has been performed. Production remote qualification remains untested and requires explicit authorization. A preflight `doctor` is also available; M4 will qualify the installed journey and document supported limits.

@@ -146,13 +146,15 @@ def load_policy(path: Path) -> dict:
     return policy
 
 
-def sandbox_command(command: list[str], work: Path, scratch: Path, policy: dict) -> list[str]:
+def sandbox_command(command: list[str], work: Path, scratch: Path, policy: dict, network=False) -> list[str]:
     if policy["sandbox"] == "fixture":
         return command
     if sys.platform != "darwin" or not shutil.which("sandbox-exec"):
         raise ValueError("macOS sandbox-exec unavailable; configure a supported constrained host")
     # State, Git metadata, gates, and the operator checkout are outside these roots.
     profile = "(version 1)(allow default)(deny file-write*)(deny signal)"
+    if not network:
+        profile += "(deny network*)"
     for path in (work, scratch):
         profile += f"(allow file-write* (subpath {json.dumps(str(path.resolve()))}))"
     profile += '(allow file-write* (literal "/dev/null"))'
@@ -178,9 +180,9 @@ def terminate(process):
     process.wait()
 
 
-def execute(command, work, scratch, policy, deadline, log, env):
+def execute(command, work, scratch, policy, deadline, log, env, network=False):
     """File-backed output, bounded wall time, cancellation, descendant cleanup."""
-    command = sandbox_command(command, work, scratch, policy)
+    command = sandbox_command(command, work, scratch, policy, network)
     command = [sys.executable, "-I", str(Path(__file__).with_name("process_guard.py")), *command]
     with log.open("wb") as output:
         process = subprocess.Popen(
@@ -314,6 +316,10 @@ def drive(project, directory, state):
             break
         item = ready[0]
         task = item["task"]
+        if task.get("source_disposition", "ready") != "ready":
+            transition(item, "needs_input", task.get("source_next_action") or "Review source disposition before execution")
+            checkpoint(directory, state)
+            continue
         if not task.get("goal") or not task.get("acceptance_criteria") or not task.get("files_expected"):
             transition(item, "needs_input", "Specify goal, acceptance criteria, and allowed files in the reviewed plan.")
             checkpoint(directory, state)
@@ -358,7 +364,16 @@ def drive(project, directory, state):
             env.pop("PYTHONPATH", None)
             log = directory / f"{task['id']}-{number}-worker.log"
             deadline = min(state["deadline"], time.time() + policy["attempt_seconds"])
-            code = execute(worker_command(policy, task, attempt, scratch), work, scratch, policy, deadline, log, env)
+            code = execute(
+                worker_command(policy, task, attempt, scratch),
+                work,
+                scratch,
+                policy,
+                deadline,
+                log,
+                env,
+                network=policy["adapter"] == "claude",
+            )
             attempt["worker_log"] = str(log)
             if code:
                 raise ValueError(f"Worker exited {code}. Inspect {log}; check adapter/authentication or implementation.")
