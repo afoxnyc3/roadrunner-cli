@@ -1,0 +1,252 @@
+{
+  "candidate": "1.1.0rc1",
+  "wheel": "/private/tmp/rr-m4-final-wheel/roadrunner_cli-1.1.0rc1-py3-none-any.whl",
+  "sha256": "e908a54e55d53f960d2f5d6d205e5f9d236794bdefa669a86afe535ef9de1607",
+  "checks": {
+    "pytest_passed": 298,
+    "pytest_skipped": 1,
+    "ruff": "pass",
+    "mypy": "pass (21 files)",
+    "shellcheck": "pass"
+  },
+  "preflight": {
+    "outcome": "ready_for_canary",
+    "checks": [
+      {
+        "check": "git",
+        "value": "eb0d20fa159a6a7e5158b0a434d8d1897d906d1c"
+      },
+      {
+        "check": "state_storage",
+        "value": "/private/tmp/roadrunner-real-canary-2026-09-18/project/.git/roadrunner",
+        "writable": true
+      },
+      {
+        "check": "validation",
+        "value": [
+          "PYTHONDONTWRITEBYTECODE=1 /private/tmp/rr-m4-installed/bin/python gate.py"
+        ],
+        "protected": [
+          "gate.py"
+        ]
+      },
+      {
+        "check": "adapter_version",
+        "value": "2.1.277 (Claude Code)"
+      },
+      {
+        "check": "authentication",
+        "value": "available inside worker sandbox; canary still required"
+      },
+      {
+        "check": "isolation",
+        "value": "macos"
+      }
+    ]
+  },
+  "installed_demonstration": {
+    "installed_executable": "/private/tmp/rr-m4-installed/bin/roadrunner",
+    "external_project": "/private/tmp/rr-installed-worktree-qualified-2026-09-18/external-project",
+    "doctor": {
+      "outcome": "ready_for_canary",
+      "checks": [
+        {
+          "check": "git",
+          "value": "a588a7bfa80a1139611e2173cdce99f4a3b90666"
+        },
+        {
+          "check": "state_storage",
+          "value": "/private/tmp/rr-installed-worktree-qualified-2026-09-18/external-project/.git/roadrunner",
+          "writable": true
+        },
+        {
+          "check": "validation",
+          "value": [
+            "/private/tmp/rr-m4-installed/bin/python gate.py"
+          ],
+          "protected": [
+            "gate.py"
+          ]
+        },
+        {
+          "check": "isolation",
+          "value": "macos"
+        }
+      ]
+    },
+    "source_plan": {
+      "plan": "/private/tmp/rr-installed-worktree-qualified-2026-09-18/external-project/.git/roadrunner/plans/0dc7aee37f3552eb6459cb26d1699c306a8072a1705efe5e90ee89a16fb2078b.yaml",
+      "plan_id": "0dc7aee37f3552eb6459cb26d1699c306a8072a1705efe5e90ee89a16fb2078b",
+      "selected": 6,
+      "items": [
+        {
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-001",
+          "revision": "20cdf5709d7842e24e28889613f1e2819b4ae2834ca8389a09a4eedd0a2f084c",
+          "disposition": "ready",
+          "next_action": null
+        },
+        {
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-002",
+          "revision": "a87b73ab8c212c6e4a1dd393580fd3971ed14d765b219d7d8a2c742336661084",
+          "disposition": "ready",
+          "next_action": null
+        },
+        {
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-003",
+          "revision": "aa93b897d4baef848baae0a527b2740e80c526a22e0837c4008bbebe6b33e3ed",
+          "disposition": "ready",
+          "next_action": null
+        },
+        {
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-004",
+          "revision": "55b95de879141ecd1ee7dd487bb0e455696ce8cc68bc620c7225a6ad21eee12d",
+          "disposition": "needs_input",
+          "next_action": "Provide goal, acceptance criteria, and file scope in the reviewed intake rules."
+        },
+        {
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-005",
+          "revision": "70e58bb55a2634d408a0701cbaeabcf52c11c224d83c4cd1a0cca72b0ed00c7a",
+          "disposition": "ready",
+          "next_action": null
+        },
+        {
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-006",
+          "revision": "ba0e10df274b99ffe32c3e0486a0fe11ef877ea221675f006df635f103ca94fb",
+          "disposition": "ready",
+          "next_action": null
+        }
+      ]
+    },
+    "report": {
+      "run_id": "1e594a3e-4fa9-463e-b697-8a4bc3d87f8c",
+      "branch": "refs/heads/roadrunner/run-1e594a3e-4fa9-463e-b697-8a4bc3d87f8c",
+      "fixture": true,
+      "outcome": "finished_with_blockers",
+      "reserved_usd": 7.0,
+      "items": [
+        {
+          "id": "TASK-001",
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-001",
+          "source_revision": "20cdf5709d7842e24e28889613f1e2819b4ae2834ca8389a09a4eedd0a2f084c",
+          "phase": "resolved",
+          "reason": null,
+          "attempts": 1,
+          "evidence": {
+            "base": "a588a7bfa80a1139611e2173cdce99f4a3b90666",
+            "candidate": "56635d3c8f79888969f242748288cb24684ce295",
+            "task_commit": "74807b003b2aa71af01a6677216532787d8f1e9e",
+            "gate_version": "0ad78cc4646022568117af00dea3118049d6951cb852fca8266f0421be4c2cda",
+            "gates": [
+              {
+                "command": "/private/tmp/rr-m4-installed/bin/python gate.py",
+                "exit_code": 0,
+                "log": "/private/tmp/rr-installed-worktree-qualified-2026-09-18/external-project/.git/roadrunner/1e594a3e-4fa9-463e-b697-8a4bc3d87f8c/TASK-001-1-gate-0.log"
+              }
+            ],
+            "attempt_id": "636540ed-0d50-4eb2-b25a-da090082bf83"
+          }
+        },
+        {
+          "id": "TASK-002",
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-002",
+          "source_revision": "a87b73ab8c212c6e4a1dd393580fd3971ed14d765b219d7d8a2c742336661084",
+          "phase": "resolved",
+          "reason": null,
+          "attempts": 1,
+          "evidence": {
+            "base": "56635d3c8f79888969f242748288cb24684ce295",
+            "candidate": "7de0ac4554834a96ca751f358e2421adf0384075",
+            "task_commit": "4ebeaa22937848fb2fe4ac929786d0b927f47a3e",
+            "gate_version": "0ad78cc4646022568117af00dea3118049d6951cb852fca8266f0421be4c2cda",
+            "gates": [
+              {
+                "command": "/private/tmp/rr-m4-installed/bin/python gate.py",
+                "exit_code": 0,
+                "log": "/private/tmp/rr-installed-worktree-qualified-2026-09-18/external-project/.git/roadrunner/1e594a3e-4fa9-463e-b697-8a4bc3d87f8c/TASK-002-1-gate-0.log"
+              }
+            ],
+            "attempt_id": "cf6248b9-32e6-4d7e-92a0-3a73c650ca19"
+          }
+        },
+        {
+          "id": "TASK-003",
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-003",
+          "source_revision": "aa93b897d4baef848baae0a527b2740e80c526a22e0837c4008bbebe6b33e3ed",
+          "phase": "resolved",
+          "reason": null,
+          "attempts": 2,
+          "evidence": {
+            "base": "7de0ac4554834a96ca751f358e2421adf0384075",
+            "candidate": "0af095f33d509f0c0c7a28d3a4f965db21c088cc",
+            "task_commit": "0fd5f61ad87b823a9761a902d4b53c2934537bf5",
+            "gate_version": "0ad78cc4646022568117af00dea3118049d6951cb852fca8266f0421be4c2cda",
+            "gates": [
+              {
+                "command": "/private/tmp/rr-m4-installed/bin/python gate.py",
+                "exit_code": 0,
+                "log": "/private/tmp/rr-installed-worktree-qualified-2026-09-18/external-project/.git/roadrunner/1e594a3e-4fa9-463e-b697-8a4bc3d87f8c/TASK-003-2-gate-0.log"
+              }
+            ],
+            "attempt_id": "994841fe-bdb7-46aa-9a30-e2e41dc2fcff"
+          }
+        },
+        {
+          "id": "TASK-004",
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-004",
+          "source_revision": "55b95de879141ecd1ee7dd487bb0e455696ce8cc68bc620c7225a6ad21eee12d",
+          "phase": "needs_input",
+          "reason": "Provide goal, acceptance criteria, and file scope in the reviewed intake rules.",
+          "attempts": 0,
+          "evidence": null
+        },
+        {
+          "id": "TASK-005",
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-005",
+          "source_revision": "70e58bb55a2634d408a0701cbaeabcf52c11c224d83c4cd1a0cca72b0ed00c7a",
+          "phase": "blocked",
+          "reason": "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy. Worker exited 17. Inspect /private/tmp/rr-installed-worktree-qualified-2026-09-18/external-project/.git/roadrunner/1e594a3e-4fa9-463e-b697-8a4bc3d87f8c/TASK-005-2-worker.log; check adapter/authentication or implementation.",
+          "attempts": 2,
+          "evidence": null
+        },
+        {
+          "id": "TASK-006",
+          "source_id": "file:///private/tmp/rr-installed-worktree-qualified-2026-09-18/roadmap.yaml#TASK-006",
+          "source_revision": "ba0e10df274b99ffe32c3e0486a0fe11ef877ea221675f006df635f103ca94fb",
+          "phase": "resolved",
+          "reason": null,
+          "attempts": 1,
+          "evidence": {
+            "base": "0af095f33d509f0c0c7a28d3a4f965db21c088cc",
+            "candidate": "0614a3dd9d99ee10f646299a7ab422be38a643cb",
+            "task_commit": "c9ca4d079cbe8a81597f39b8d716716954591124",
+            "gate_version": "0ad78cc4646022568117af00dea3118049d6951cb852fca8266f0421be4c2cda",
+            "gates": [
+              {
+                "command": "/private/tmp/rr-m4-installed/bin/python gate.py",
+                "exit_code": 0,
+                "log": "/private/tmp/rr-installed-worktree-qualified-2026-09-18/external-project/.git/roadrunner/1e594a3e-4fa9-463e-b697-8a4bc3d87f8c/TASK-006-1-gate-0.log"
+              }
+            ],
+            "attempt_id": "3fced8ca-ab89-4b4d-9b42-bba63e0ed231"
+          }
+        }
+      ]
+    },
+    "operator_preserved": true,
+    "repeated_sync_identical": true,
+    "repeated_resume_identical": true,
+    "real_agent": false
+  },
+  "real_agent_canary": "Passed with native Claude Code 2.1.277 from installed wheel: three verified integrations and two expected needs-input outcomes; final tree independently checked; resume identical without new attempts.",
+  "real_remote_mutations": "not authorized or performed",
+  "recovery_audit": {
+    "pre_fix_false_success_regressions": 4,
+    "frozen_plan_tampering_reproduced": true,
+    "all_gate_results_and_commands_verified": true,
+    "current_attempt_binding": true,
+    "atomic_plan_sync": true
+  },
+  "real_canary_evidence": "shipping-real-canary-2026-09-18.json",
+  "real_canary_qualified_revision": "d1242d9",
+  "qualification_scope": "Local delivery on macOS. Live remote mutation behavior and other real-worker platforms are not qualified."
+}

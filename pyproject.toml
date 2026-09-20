@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "roadrunner-cli"
-version = "1.0.0"
+version = "1.1.0rc1"
 description = "Deterministic agentic loop controller for Claude Code — Python owns the roadmap, Claude owns the implementation."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,7 +12,7 @@ license = { text = "MIT" }
 authors = [{ name = "Alex Fox", email = "afoxnyc@icloud.com" }]
 keywords = ["claude-code", "agentic", "roadmap", "automation", "cli"]
 classifiers = [
-    "Development Status :: 5 - Production/Stable",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: POSIX",
@@ -35,6 +35,10 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.4.0",
     "build>=1.0",
+    "setuptools>=68",
+    "wheel",
+    "mypy>=1.0",
+    "types-PyYAML",
 ]
 
 [project.scripts]
@@ -64,3 +68,6 @@ python_version = "3.10"
 ignore_missing_imports = true
 warn_return_any = true
 warn_unused_ignores = true
+
+[tool.setuptools.package-data]
+roadrunner = ["scaffold/hooks/*", "scaffold/.claude/settings.json"]

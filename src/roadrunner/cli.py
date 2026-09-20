@@ -320,10 +320,27 @@ def load_tasks() -> list[Task]:
         raise ValueError(
             f"tasks file at {TASKS_FILE} is not valid YAML: {exc}. Check tasks/tasks.yaml.bak for the last known-good version."
         ) from exc
+    if not isinstance(data, dict) or not isinstance(data.get("tasks", []), list):
+        raise ValueError("Plan must contain a tasks list")
     tasks = data.get("tasks", [])
     for i, task in enumerate(tasks):
         validate_task_schema(task, i)
+    validate_plan(tasks)
     return cast(list[Task], tasks)
+
+
+def validate_plan(tasks: list) -> None:
+    ids = [task["id"] for task in tasks]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Duplicate task IDs")
+    deps = {task["id"]: task.get("depends_on", []) for task in tasks}
+    for task_id, prerequisites in deps.items():
+        if any(dep not in deps for dep in prerequisites):
+            raise ValueError(f"Task {task_id} has unknown dependencies")
+    if _find_cycles(ids, deps):
+        raise ValueError("Circular task dependencies")
+    if sum(task.get("status") == "in_progress" for task in tasks) > 1:
+        raise ValueError("Only one active task is permitted")
 
 
 def load_project_config() -> dict:
@@ -504,7 +521,9 @@ def create_task_branch(task_id: str, base_branch: str | None = None) -> bool:
         return False
     branch = task_branch_name(task_id)
     if _branch_exists(branch):
-        return True
+        return _git("checkout", branch, check=False).returncode == 0
+    if base_branch and not _branch_exists(base_branch):
+        return False
     if base_branch and _branch_exists(base_branch):
         checkout = _git("checkout", base_branch, check=False)
         if checkout.returncode != 0:
@@ -513,7 +532,7 @@ def create_task_branch(task_id: str, base_branch: str | None = None) -> bool:
                 task_id=task_id,
                 extra={"base": base_branch, "stderr": checkout.stderr.strip()[:200]},
             )
-            # Fall through — we'll still try to branch from whatever HEAD is.
+            return False
     result = _git("checkout", "-b", branch, check=False)
     if result.returncode != 0:
         trace_event("git_branch_error", task_id=task_id, extra={"stderr": result.stderr.strip()[:200]})
@@ -576,10 +595,9 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
         return False
     branch = task_branch_name(task_id)
     if not _branch_exists(branch):
-        return True
-    current = _current_branch()
-    if current == branch:
-        _git("checkout", base_branch, check=False)
+        return False
+    if _git("checkout", base_branch, check=False).returncode != 0:
+        return False
     result = _git("merge", branch, "--no-edit", check=False)
     if result.returncode != 0:
         # Abort the in-flight merge so callers can inspect/retry cleanly.
@@ -1025,21 +1043,27 @@ def cmd_start(args: argparse.Namespace) -> None:
         print(f"Task {args.task_id} is not eligible (status={task.get('status')}, check deps).")
         sys.exit(1)
 
+    if active_task(tasks):
+        raise ValueError("An active task already exists")
     state = read_state()
+    attempts = state.get("attempts_per_task", {}).copy()
+    attempts[args.task_id] = 0
     # Record base branch before creating task branch. Prefer the configured
     # project_base from tasks.yaml over _current_branch() to avoid stacking
     # task branches on top of previous task branches (ROAD-025).
     base_branch = get_project_base()
+    branched = create_task_branch(args.task_id, base_branch=base_branch)
+    if _is_git_repo() and not branched:
+        raise ValueError("Task branch preparation failed; task was not started")
     task["status"] = "in_progress"
     save_tasks(tasks)
     write_state(
         args.task_id,
         state.get("iteration", 0),
-        state.get("attempts_per_task"),
+        attempts,
         extra={"base_branch": base_branch},
     )
     append_changelog(args.task_id, "in_progress")
-    branched = create_task_branch(args.task_id, base_branch=base_branch)
     trace_event(
         "task_start",
         task_id=args.task_id,
@@ -1102,12 +1126,24 @@ def cmd_complete(args: argparse.Namespace) -> None:
         print(f"Task {args.task_id} not found.")
         sys.exit(1)
 
+    state = read_state()
+    if task.get("status") != "in_progress" or state.get("current_task_id") != args.task_id:
+        raise ValueError("Completion requires the current active task")
+    if any(not (prerequisite := get_task(tasks, dep)) or prerequisite.get("status") != "done"
+           for dep in task.get("depends_on", [])):
+        raise ValueError("Completion requires resolved dependencies")
+    if not task.get("validation_commands") and not get_baseline_validation():
+        raise ValueError("Completion requires validation commands")
     passed, results = run_validation(task)
     if not passed:
         print(f"Validation failed. Task {args.task_id} NOT marked done.")
         write_work_log(task, results, notes=args.notes or "")
         sys.exit(1)
 
+    base_branch = state.get("base_branch", "main")
+    merged = merge_task_branch(args.task_id, base_branch)
+    if not merged:
+        raise ValueError("Integration failed; task remains unfinished. Repair the task branch and retry.")
     task["status"] = "done"
     save_tasks(tasks)
     write_work_log(task, results, notes=args.notes or "")
@@ -1116,7 +1152,6 @@ def cmd_complete(args: argparse.Namespace) -> None:
     state = read_state()
     # Merge task branch back to base if it exists
     base_branch = state.get("base_branch", "main")
-    merged = merge_task_branch(args.task_id, base_branch)
     # Clear current_task_id so SessionStart / check_stop don't read a stale
     # "resume this done task" pointer on the next fire. Preserve iteration,
     # attempts, and base_branch for continuity.
@@ -1763,7 +1798,7 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
             sys.exit(0)
 
         # Completion signal: Claude outputs ROADMAP_COMPLETE as the last non-empty line
-        if is_completion_signal(last_msg):
+        if is_completion_signal(last_msg) and all(t.get("status") == "done" for t in tasks):
             append_changelog(
                 "ALL",
                 "complete",
@@ -1978,13 +2013,13 @@ implementation. One task per cycle. No side quests. No skipping ahead.
 3. Implement, staying strictly inside the task's `files_expected`
 4. `roadrunner validate TASK-XXX` — run every validation command;
    they must all exit 0
-5. `roadrunner complete TASK-XXX --notes "what you did"` — marks
-   done, merges the task branch back to base
-6. `roadrunner commit TASK-XXX --notes "..."` — stages only files
+5. `roadrunner commit TASK-XXX --notes "..."` — stages only files
    in `files_expected` + roadrunner overlay (logs/, tasks.yaml, .reset_*) and
    commits with a conventional message. **Do not use `git add -A`** — it
    sweeps unrelated changes into your task commit. If the commit refuses,
    fix the out-of-scope files (stash, add to files_expected, or discard).
+6. `roadrunner complete TASK-XXX --notes "what you did"` — validates
+   the active task and requires successful Git integration before marking done
 7. `roadrunner reset TASK-XXX --summary "one-line"` — writes the
    boundary marker for the next task
 
@@ -2059,7 +2094,7 @@ def _find_template_source() -> Path:
     template's existence before adding it to the plan, so the bare
     scaffold (tasks/, logs/, CLAUDE.md) still drops in cleanly.
     """
-    return Path(__file__).resolve().parent.parent.parent
+    return Path(__file__).resolve().parent / "scaffold"
 
 
 def cmd_init(args: argparse.Namespace) -> None:
@@ -2122,7 +2157,7 @@ def cmd_init(args: argparse.Namespace) -> None:
     print("  2. Review CLAUDE.md and tailor the agent brief to your project.")
     print("  3. Confirm .claude/settings.json wires up the hooks you want to run.")
     print("  4. Run `roadrunner status` to confirm the roadmap parses.")
-    print("  5. Start the loop with `roadrunner next`.")
+    print("  5. Review a run policy, then use `roadrunner doctor` and `roadrunner run --plan tasks/tasks.yaml --policy POLICY.json`.")
     if skipped:
         print()
         print(f"Skipped {len(skipped)} existing path(s); they were left untouched.")
@@ -2198,6 +2233,8 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     dep_map: dict[str, list[str]] = {t["id"]: list(t.get("depends_on") or []) for t in tasks if t.get("id")}
 
     errors: list[str] = []
+    if len(ids) != len(id_set):
+        errors.append("Duplicate task IDs")
     warnings: list[str] = []
 
     for tid, deps in dep_map.items():
@@ -2440,8 +2477,25 @@ def _build_task_brief(task: Task, iteration: int, max_iter: int, resume: bool = 
 
 
 def main() -> None:
+    if len(sys.argv) > 1 and sys.argv[1] == "doctor":
+        from .doctor import main as doctor_main
+        sys.exit(doctor_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "deliver":
+        from .delivery import main as delivery_main
+        sys.exit(delivery_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "sync":
+        from .intake import main as sync_main
+        sys.exit(sync_main(sys.argv[2:]))
+    if len(sys.argv) > 1 and sys.argv[1] == "run":
+        from .supervisor import main as run_main
+        sys.exit(run_main(sys.argv[2:]))
     parser = argparse.ArgumentParser(description="Roadmap Loop Controller")
     sub = parser.add_subparsers(dest="command")
+    for name, description in (("run", "Execute a frozen plan with verified local integration"),
+                              ("sync", "Normalize and freeze selected roadmap or GitHub items"),
+                              ("deliver", "Prepare or explicitly execute policy-controlled remote delivery"),
+                              ("doctor", "Preflight project, policy, adapter, and isolation")):
+        sub.add_parser(name, help=description)
 
     sub.add_parser("status")
     sub.add_parser("next")

@@ -14,8 +14,9 @@ You are executing a deterministic roadmap. Python owns control. You own implemen
 3. Implement the task — stay within its scope
 4. Run `roadrunner validate TASK-XXX` to check your work
 5. Fix any failures — validation commands are the source of truth, not your assessment
-6. Run `roadrunner complete TASK-XXX --notes "what you did"` to close the task
-7. Run `roadrunner reset TASK-XXX --summary "one line"` to write the boundary marker
+6. Commit the scoped implementation with `roadrunner commit TASK-XXX` before completion.
+7. Run `roadrunner complete TASK-XXX --notes "what you did"` to close the task
+8. Run `roadrunner reset TASK-XXX --summary "one line"` to write the boundary marker
 
 **The Stop hook will determine what comes next. Do not attempt to decide task order yourself.**
 
@@ -52,8 +53,7 @@ Document what is blocking. Do not keep retrying indefinitely.
 
 ## Validation Is the Gate
 
-A task is done when `roadrunner validate TASK-XXX` exits 0.
-Not when you think it looks right. Not when the code exists. When validation passes.
+Validation is necessary. Completion also requires the active task, satisfied dependencies, and successful Git integration. The legacy hook workflow is not an isolated autonomous supervisor.
 
 ---
 
@@ -94,10 +94,10 @@ roadrunner health                        # system health check
 
 After every response, the Stop hook checks (in this order):
 
-1. Is `stop_hook_active` true? → allow stop (prevents infinite loop)
+1. Python evaluates continuation, including `stop_hook_active`; the shell wrapper does not bypass it.
 2. Is `.roadrunner_paused` present in the project root? → allow stop (ad-hoc bypass)
 3. Iteration limit reached? → hard stop with message
-4. Did you output `ROADMAP_COMPLETE` as the last line? → allow stop
+4. Did you output `ROADMAP_COMPLETE` as the last line AND are all tasks done? → allow stop
 5. Is a task `in_progress`? → inject a resume brief and block stop
 6. Are there eligible `todo` tasks? → inject the next task brief and block stop
 7. Are tasks blocked? → report blocked tasks and block stop

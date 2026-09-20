@@ -7,12 +7,26 @@ exit codes, stdout JSON, and stderr feedback.
 import json
 import os
 import subprocess
+import shutil
 from pathlib import Path
 
 import pytest
 
 PROJECT_ROOT = Path(__file__).parent.parent
 HOOKS_DIR = PROJECT_ROOT / "hooks"
+
+
+@pytest.fixture(autouse=True)
+def isolated_hook_project(tmp_path, monkeypatch):
+    source = Path(__file__).resolve().parents[1]
+    tmp_path = tmp_path / "hook-project"
+    tmp_path.mkdir()
+    for name in ("hooks", "tasks"):
+        shutil.copytree(source / name, tmp_path / name)
+    (tmp_path / "logs").mkdir()
+    monkeypatch.setattr(__import__(__name__), "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(__import__(__name__), "HOOKS_DIR", tmp_path / "hooks")
+    monkeypatch.setenv("PYTHONPATH", str(source / "src"))
 
 
 def run_hook(hook_name: str, stdin_data: dict | str = "", env_extra: dict | None = None) -> subprocess.CompletedProcess:
@@ -36,10 +50,10 @@ def run_hook(hook_name: str, stdin_data: dict | str = "", env_extra: dict | None
 
 
 class TestStopHook:
-    def test_stop_hook_active_allows_stop(self):
+    def test_stop_hook_active_consults_controller(self):
         result = run_hook("stop_hook.sh", {"stop_hook_active": True, "last_assistant_message": ""})
         assert result.returncode == 0
-        assert result.stdout.strip() == ""
+        assert not result.stdout.strip() or json.loads(result.stdout).get("decision") == "block"
 
     def test_blocks_when_tasks_remain(self):
         result = run_hook("stop_hook.sh", {"stop_hook_active": False, "last_assistant_message": "working"})
@@ -112,7 +126,8 @@ class TestStopHook:
             capture_output=True, text=True,
             env=minimal_env,
         )
-        assert result.returncode == 0, f"stderr: {result.stderr}"
+        assert result.returncode != 0
+        assert "cannot import" in result.stderr
 
 
 # ── SessionStart Hook ────────────────────────────────────────────────────────

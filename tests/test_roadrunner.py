@@ -1227,6 +1227,10 @@ class TestCheckStop:
         assert result is None, "with no work remaining + hook-loop signal, allow stop"
 
     def test_completion_signal_allows_stop(self, tmp_project):
+        tasks = roadrunner.load_tasks()
+        for task in tasks:
+            task["status"] = "done"
+        roadrunner.save_tasks(tasks)
         roadrunner.write_state(None, 0)
         result = self._capture_check_stop(
             tmp_project,
@@ -2029,8 +2033,8 @@ class TestGitBranching:
         assert "git_merge_abort" in trace_text
 
     def test_merge_missing_branch_noop(self, tmp_git_project):
-        # No task branch exists — merge_task_branch should succeed trivially
-        assert roadrunner.merge_task_branch("TASK-DOESNOTEXIST", "main") is True
+        # Missing delivery evidence cannot succeed.
+        assert roadrunner.merge_task_branch("TASK-DOESNOTEXIST", "main") is False
 
 
 class TestPushOnComplete:
@@ -2418,7 +2422,8 @@ class TestCompleteClearsState:
     so SessionStart / check_stop don't read a stale pointer to a just-done task."""
 
     def test_complete_nulls_current_task_id(self, tmp_git_project):
-        # Seed state as if a task had been started
+        roadrunner.cmd_start(argparse.Namespace(task_id="TASK-002"))
+        # Seed counters for the active task
         roadrunner.write_state("TASK-002", 3, {"TASK-002": 1}, extra={"base_branch": "main"})
         # Sanity check the seed
         assert roadrunner.read_state().get("current_task_id") == "TASK-002"

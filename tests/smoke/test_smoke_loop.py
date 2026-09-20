@@ -270,6 +270,10 @@ class TestSmokeLoopStateMachine:
         """The ROADMAP_COMPLETE sentinel halts the loop and writes a terminal
         CHANGELOG entry. A returns-early-without-logging implementation would
         silently regress the audit trail."""
+        tasks = roadrunner.load_tasks()
+        for task in tasks:
+            task["status"] = "done"
+        roadrunner.save_tasks(tasks)
         roadrunner.write_state(None, 0)
         result = _drive_check_stop(
             {
