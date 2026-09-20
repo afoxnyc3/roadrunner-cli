@@ -255,13 +255,13 @@ def test_issue_closure_requires_strict_boolean_capability(project, monkeypatch):
 
     monkeypatch.setattr(delivery, "mutate", mutate)
     monkeypatch.setattr(delivery, "gh", gh)
-    with pytest.raises(ValueError, match="allow_close: true"):
-        delivery.deliver(
-            project,
-            saved["id"],
-            dict(repository="example/repo", base="main", allow_push=True, allow_close="true", required_checks=["CI"]),
-            True,
-        )
+    result = delivery.deliver(
+        project,
+        saved["id"],
+        dict(repository="example/repo", base="main", allow_push=True, allow_close="true", required_checks=["CI"]),
+        True,
+    )
+    assert result["phase"] == "merged"
     assert not any(args[:3] == ["gh", "issue", "close"] for args in mutations)
 
 

@@ -150,7 +150,7 @@ def deliver(project, run_id, policy, execute=False):
             phase="merged", merge_commit=merged, next_action="Source closure requires explicit policy and matching source revisions."
         )
         atomic(directory / "delivery.json", result)
-        if policy.get("allow_close"):
+        if policy.get("allow_close") is True:
             require(policy, "close")
             closures = []
             for item in state["items"]:
