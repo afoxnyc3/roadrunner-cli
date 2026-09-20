@@ -151,6 +151,7 @@ def deliver(project, run_id, policy, execute=False):
         )
         atomic(directory / "delivery.json", result)
         if policy.get("allow_close"):
+            require(policy, "close")
             closures = []
             for item in state["items"]:
                 task = item["task"]

@@ -222,6 +222,49 @@ def test_issue_closure_requires_matching_revision_and_verified_merge(project, mo
         assert row["state"] == "closed"
 
 
+def test_issue_closure_requires_strict_boolean_capability(project, monkeypatch):
+    assert invoke(project).returncode == 0
+    saved, path = state(project)
+    head = saved["items"][0]["evidence"]["candidate"]
+    row = dict(id=7, updated_at="selected", title="Issue", body="Requirement", state="open")
+    saved["items"][0]["task"].update(source_id="github:example/repo#7", source_revision=delivery.digest(row))
+    delivery.atomic(path, saved)
+    pr = dict(
+        number=1,
+        url="https://github.com/example/repo/pull/1",
+        headRefOid=head,
+        baseRefName="main",
+        state="MERGED",
+        mergeCommit={"oid": "merge"},
+        statusCheckRollup=[dict(name="CI", conclusion="SUCCESS")],
+    )
+    mutations = []
+
+    def mutate(args):
+        mutations.append(args)
+        return head + "\tref" if args[:2] == ["git", "ls-remote"] else ""
+
+    def gh(args):
+        if args[0] == "api":
+            if "/git/commits/" in args[1]:
+                return {"tree": {"sha": delivery.git(project, "rev-parse", head + "^{tree}")}}
+            if "/issues/" in args[1]:
+                return dict(row)
+            return {"status": "ahead"}
+        return [pr] if args[1] == "list" else pr
+
+    monkeypatch.setattr(delivery, "mutate", mutate)
+    monkeypatch.setattr(delivery, "gh", gh)
+    with pytest.raises(ValueError, match="allow_close: true"):
+        delivery.deliver(
+            project,
+            saved["id"],
+            dict(repository="example/repo", base="main", allow_push=True, allow_close="true", required_checks=["CI"]),
+            True,
+        )
+    assert not any(args[:3] == ["gh", "issue", "close"] for args in mutations)
+
+
 def test_delivery_rejects_corrupt_local_gate_before_remote_access(project, monkeypatch):
     assert invoke(project).returncode == 0
     saved, path = state(project)

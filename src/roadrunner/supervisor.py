@@ -140,6 +140,9 @@ def load_policy(path: Path) -> dict:
     gates = policy.get("validation_commands")
     if not isinstance(gates, list) or not gates or any(not isinstance(g, str) or not g.strip() for g in gates):
         raise ValueError("Reviewed policy must specify nonempty validation_commands")
+    protected = policy["protected_paths"]
+    if not isinstance(protected, list) or any(not isinstance(path, str) or not path.strip() for path in protected):
+        raise ValueError("protected_paths must be a list of nonempty strings")
     policy["protected_paths"] = [relative_path(p) for p in policy["protected_paths"]]
     if policy["adapter"] not in ("claude", "fixture"):
         raise ValueError("Supported adapter: claude (fixture is for disposable tests only)")

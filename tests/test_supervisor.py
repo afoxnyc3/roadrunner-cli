@@ -152,6 +152,21 @@ def test_invalid_transition_rejected():
             runner.transition({"phase": phase}, "resolved")
 
 
+@pytest.mark.parametrize("protected_paths", ["gate.py", ["gate.py", 1], [""]])
+def test_load_policy_rejects_invalid_protected_paths(tmp_path, protected_paths):
+    policy = tmp_path / "policy.json"
+    policy.write_text(
+        json.dumps(
+            {
+                "validation_commands": ["python verify.py"],
+                "protected_paths": protected_paths,
+            }
+        )
+    )
+    with pytest.raises(ValueError, match="protected_paths must be a list of nonempty strings"):
+        runner.load_policy(policy)
+
+
 def test_reconcile_integrated_intent_without_duplicate(project):
     assert invoke(project).returncode == 0
     saved, path = state(project)
