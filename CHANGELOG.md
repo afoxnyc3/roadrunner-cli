@@ -106,6 +106,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Restored the original roadrunner banner at the top of the repository README.
 - Stale references to `docs/resolution-plan-2026-04-24.md` (file no
   longer in the working tree) scrubbed from
   `.github/workflows/weekly-smoke.yml` and `src/roadrunner/session.py`

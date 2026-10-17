@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/banner.png" alt="Roadrunner CLI — illustrated roadrunner banner" width="800" />
+</p>
+
 # Roadrunner CLI
 
 Roadrunner works through a reviewed backlog in an existing Git project. A serial Python controller selects tasks, invokes Claude Code, validates committed changes, and integrates successful work into a dedicated local run branch. Each selected item ends as verified local resolution or an actionable blocker. A model claim, passing tests on an unintegrated branch, or a newly created PR cannot resolve an item.
