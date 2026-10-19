@@ -82,6 +82,7 @@ class ValidationResult(TypedDict, total=False):
     stdout: str
     stderr: str
     timed_out: bool
+    kind: str  # failures only: "fail" | "timeout" | "env" (see classify_validation)
     phase: str  # ROAD-015: "baseline" or "task" — which suite the command ran in
 
 
@@ -637,6 +638,34 @@ def merge_task_branch(task_id: str, base_branch: str) -> bool:
 # ── Validation ────────────────────────────────────────────────────────────────
 
 
+# Shell exit codes meaning the command never ran: 127 not found, 126 not executable.
+_ENV_RETURNCODES = frozenset({126, 127})
+
+
+def classify_validation(returncode: int, timed_out: bool) -> str:
+    """Classify a failed validation command.
+
+    ``timeout``: killed by the validation timeout. ``env``: the shell could
+    not run it (missing or non-executable binary), a setup problem and not a
+    code problem. ``fail``: it ran and exited nonzero. Heuristic: a script
+    that itself exits 126/127 is reported as ``env``.
+    """
+    if timed_out:
+        return "timeout"
+    if returncode in _ENV_RETURNCODES:
+        return "env"
+    return "fail"
+
+
+def _kind_note(r: ValidationResult) -> str:
+    kind = r.get("kind")
+    if kind == "timeout":
+        return "timed out (raise validation_timeout or check for a hang), not a test failure"
+    if kind == "env":
+        return "command could not run (missing or non-executable), environment problem not a code failure"
+    return ""
+
+
 def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
     """Run project baseline (if any), then the task's validation_commands.
 
@@ -696,6 +725,9 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
         }
         if timed_out:
             entry["timed_out"] = True
+        kind = None if passed else classify_validation(returncode, timed_out)
+        if kind:
+            entry["kind"] = kind
         results.append(entry)
         trace_event(
             "validation_command",
@@ -704,7 +736,7 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
             command=cmd,
             exit_code=returncode,
             duration_ms=elapsed,
-            extra={"phase": phase},
+            extra={"phase": phase, "kind": kind},
         )
         return passed
 
@@ -884,6 +916,8 @@ def _build_work_log_auto_block(task: Task, validation_results: list[ValidationRe
         for r in validation_results:
             icon = "✅" if r["passed"] else "❌"
             lines.append(f"\n### {icon} `{r['command']}`")
+            if not r["passed"] and _kind_note(r):
+                lines.append(f"**{r['kind']}:** {_kind_note(r)}")
             if r["stdout"]:
                 lines.append(f"```\n{r['stdout']}\n```")
             if r["stderr"] and not r["passed"]:
@@ -1098,6 +1132,8 @@ def cmd_validate(args: argparse.Namespace) -> None:
         for r in rows:
             icon = "✅" if r["passed"] else "❌"
             print(f"{icon} {r['command']}")
+            if not r["passed"] and _kind_note(r):
+                print(f"   [{r['kind']}] {_kind_note(r)}")
             if not r["passed"] and r["stderr"]:
                 print(f"   {r['stderr'][:200]}")
 
