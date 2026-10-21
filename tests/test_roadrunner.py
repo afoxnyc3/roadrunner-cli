@@ -1319,6 +1319,45 @@ class TestCheckStop:
         task_002 = roadrunner.get_task(reloaded, "TASK-002")
         assert task_002["status"] == "blocked"
 
+    def _in_progress_002(self):
+        tasks = roadrunner.load_tasks()
+        tasks[1]["status"] = "in_progress"
+        roadrunner.save_tasks(tasks)
+
+    def test_repeat_failure_blocks_before_max_attempts(self, tmp_project):
+        """Issue #19: identical failure + identical diff on consecutive validations."""
+        self._in_progress_002()
+        roadrunner.write_state("TASK-002", 1, {"TASK-002": 1})
+        fail = [{"command": "pytest", "passed": False, "returncode": 1, "stdout": "boom", "stderr": ""}]
+        with patch("roadrunner.failure_sig.diff_sig", return_value="d1"):
+            roadrunner._record_failure_signature("TASK-002", False, fail)
+            roadrunner._record_failure_signature("TASK-002", False, fail)
+        assert roadrunner.read_state()["last_failure"]["repeats"] == 1
+        result = self._capture_check_stop(
+            tmp_project, {"stop_hook_active": False, "last_assistant_message": "x"}, max_attempts="5"
+        )
+        assert "no progress" in result["reason"]
+        assert roadrunner.get_task(roadrunner.load_tasks(), "TASK-002")["status"] == "blocked"
+
+    def test_changed_diff_same_error_keeps_attempts(self, tmp_project):
+        self._in_progress_002()
+        roadrunner.write_state("TASK-002", 1, {"TASK-002": 1})
+        fail = [{"command": "pytest", "passed": False, "returncode": 1, "stdout": "boom", "stderr": ""}]
+        with patch("roadrunner.failure_sig.diff_sig", side_effect=["d1", "d2"]):
+            roadrunner._record_failure_signature("TASK-002", False, fail)
+            roadrunner._record_failure_signature("TASK-002", False, fail)
+        assert roadrunner.read_state()["last_failure"]["repeats"] == 0
+        self._capture_check_stop(tmp_project, {"stop_hook_active": False, "last_assistant_message": "x"})
+        assert roadrunner.get_task(roadrunner.load_tasks(), "TASK-002")["status"] == "in_progress"
+
+    def test_success_clears_failure_record(self, tmp_project):
+        roadrunner.write_state("TASK-002", 1, {})
+        fail = [{"command": "pytest", "passed": False, "returncode": 1, "stdout": "boom", "stderr": ""}]
+        with patch("roadrunner.failure_sig.diff_sig", return_value="d1"):
+            roadrunner._record_failure_signature("TASK-002", False, fail)
+            roadrunner._record_failure_signature("TASK-002", True, [])
+        assert roadrunner.read_state()["last_failure"] is None
+
     def test_auto_block_full_progression_from_zero(self, tmp_project):
         # Drive the full 0 → MAX progression through repeated check_stop calls
         # to prove the attempt counter increments across real hook cycles and
