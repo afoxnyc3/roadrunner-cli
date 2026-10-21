@@ -976,7 +976,7 @@ class TestRunValidation:
     def test_kind_in_trace(self, tmp_project):
         roadrunner.write_state(None, 1)
         roadrunner.run_validation({"id": "T", "validation_commands": ["definitely_not_a_cmd_xyz"]})
-        evs = [json.loads(l) for l in roadrunner.TRACE_LOG.read_text().splitlines()]
+        evs = [json.loads(line) for line in roadrunner.TRACE_LOG.read_text().splitlines()]
         cmd = [e for e in evs if e["event"] == "validation_command"][0]
         assert "env" in json.dumps(cmd)
 
