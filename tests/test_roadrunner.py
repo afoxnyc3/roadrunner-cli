@@ -961,6 +961,31 @@ class TestRunValidation:
         assert results[0]["stdout"] == "partial out"
         assert results[0]["stderr"] == "partial err"
 
+    def test_kind_fail_env_timeout(self, tmp_project):
+        roadrunner.write_state(None, 1)
+        task = {"id": "T", "validation_commands": ["false", "definitely_not_a_cmd_xyz"]}
+        _, results = roadrunner.run_validation(task)
+        assert [r["kind"] for r in results] == ["fail", "env"]
+        exc = subprocess.TimeoutExpired("x", 1)
+        with patch("roadrunner.subprocess.run", side_effect=exc):
+            _, results = roadrunner.run_validation({"id": "T", "validation_commands": ["x"]})
+        assert results[0]["kind"] == "timeout"
+        _, ok = roadrunner.run_validation({"id": "T", "validation_commands": ["true"]})
+        assert "kind" not in ok[0]
+
+    def test_kind_in_trace(self, tmp_project):
+        roadrunner.write_state(None, 1)
+        roadrunner.run_validation({"id": "T", "validation_commands": ["definitely_not_a_cmd_xyz"]})
+        evs = [json.loads(line) for line in roadrunner.TRACE_LOG.read_text().splitlines()]
+        cmd = [e for e in evs if e["event"] == "validation_command"][0]
+        assert "env" in json.dumps(cmd)
+
+    def test_classify_validation(self):
+        assert roadrunner.classify_validation(127, False) == "env"
+        assert roadrunner.classify_validation(126, False) == "env"
+        assert roadrunner.classify_validation(1, False) == "fail"
+        assert roadrunner.classify_validation(-1, True) == "timeout"
+
     def test_timeout_with_none_output(self, tmp_project):
         """TimeoutExpired with stdout=None should not crash."""
         task = {"id": "T", "validation_commands": ["hang"], "validation_timeout": 1}
