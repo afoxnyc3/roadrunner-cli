@@ -261,7 +261,30 @@ def check_worker_auth(work, scratch, policy, deadline):
         raise ValueError("Claude authentication unavailable inside the worker sandbox; run claude auth login before a new run")
 
 
-def worker_command(policy, task, attempt, scratch):
+def retry_context(item, scratch):
+    """Describe the last failed attempt so a retry is not blind. Empty on a first attempt."""
+    failed = [a for a in item["attempts"][:-1] if a.get("outcome") == "failed"]
+    if not failed:
+        return ""
+    last = failed[-1]
+    category = last.get("failure_category", "unknown")
+    text = f"\n\nPrevious attempt {last['number']} failed ({category}): {last.get('reason', 'no reason recorded')}"
+    source = last.get("failure_log")
+    if source and Path(source).is_file():
+        copy = scratch / "previous-gate.log"
+        try:
+            raw = Path(source).read_text(errors="replace")
+            keep = 3000
+            if len(raw) > 2 * keep:
+                raw = raw[:keep] + f"\n... [{len(raw) - 2 * keep} chars omitted] ...\n" + raw[-keep:]
+            copy.write_text(raw)
+            text += f"\nGate log: {copy}"
+        except OSError:
+            pass
+    return text + "\nFix the cause above; do not repeat the same change."
+
+
+def worker_command(policy, task, attempt, scratch, previous=""):
     if policy["adapter"] == "fixture":
         command = policy.get("fixture_command")
         if not isinstance(command, list) or not command:
@@ -271,6 +294,7 @@ def worker_command(policy, task, attempt, scratch):
         "Implement this one task within files_expected. Do not change Git, controller state, "
         "or validation policy. The controller commits, validates and integrates independently. "
         "If blocked, explain the missing input and next action.\n" + json.dumps(task)
+        + previous
     )
     return [
         "claude",
@@ -430,7 +454,7 @@ def drive(project, directory, state):
             attempt["worker_stderr"] = str(error_log)
             deadline = min(state["deadline"], time.time() + policy["attempt_seconds"])
             code = execute(
-                worker_command(policy, task, attempt, scratch),
+                worker_command(policy, task, attempt, scratch, retry_context(item, scratch)),
                 work,
                 scratch,
                 policy,
@@ -513,6 +537,7 @@ def drive(project, directory, state):
                 )
                 gate_results.append(dict(command=command, exit_code=code, log=str(gate_log)))
                 if code:
+                    attempt["failure_log"] = str(gate_log)
                     raise ValueError(f"Validation failed: {command}. Inspect {gate_log} and repair implementation.")
             if changed_paths(integration) or git(integration, "rev-parse", "HEAD") != candidate:
                 raise ValueError("Validation changed candidate contents; clean build artifacts and rerun")

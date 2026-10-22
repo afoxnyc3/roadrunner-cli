@@ -1124,6 +1124,18 @@ def cmd_start(args: argparse.Namespace) -> None:
     print(f"Started {args.task_id}. Iteration {state.get('iteration', 0)}.{branch_msg}")
 
 
+def _failure_summary(results: list[ValidationResult], keep: int = 600) -> str:
+    """One-paragraph description of the first failing result, for the retry brief (issue #21)."""
+    for r in results:
+        if r.get("passed"):
+            continue
+        out = (r.get("stderr") or "").strip() or (r.get("stdout") or "").strip()
+        out = out[-keep:]
+        head = f"{r.get('kind', 'fail')} in `{r.get('command', '?')}` (exit {r.get('returncode', '?')})"
+        return f"{head}:\n{out}" if out else head
+    return ""
+
+
 def _record_failure_signature(task_id: str, passed: bool, results: list[ValidationResult]) -> None:
     """Persist the failure/diff signature (issue #19). Cleared on success."""
     from roadrunner import failure_sig as fs
@@ -1134,6 +1146,7 @@ def _record_failure_signature(task_id: str, passed: bool, results: list[Validati
     else:
         prev = state.get("last_failure")
         record = fs.update_record(prev, task_id, fs.failure_sig(results), fs.diff_sig(ROOT))
+        record["summary"] = _failure_summary(results)
     if record == state.get("last_failure"):
         return
     write_state(
@@ -2543,11 +2556,16 @@ def _build_task_brief(task: Task, iteration: int, max_iter: int, resume: bool = 
     # the field — most tasks will, so the brief stays clean.
     model = task.get("model")
     model_line = f"Model: {model}\n" if model else ""
+    # Issue #21: retries are not blind. Surface the last validation failure for this task.
+    last = read_state().get("last_failure") or {}
+    prior = last.get("summary") if last.get("task_id") == task["id"] else ""
+    prior_block = f"Previous validation failed — {prior}\nFix this cause; do not repeat the same change.\n\n" if prior else ""
     return (
         f"{header}\n\n"
         f"CURRENT TASK: {task['id']} — {task.get('title')}\n"
         f"{model_line}"
         f"Goal: {task.get('goal', 'N/A')}\n\n"
+        f"{prior_block}"
         f"Acceptance criteria:\n{criteria or '  (none specified)'}\n\n"
         f"Validation commands (must pass before complete):\n{validation or '  (none)'}\n\n"
         f"Expected files:\n{files or '  (none)'}\n\n"

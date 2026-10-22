@@ -2809,3 +2809,20 @@ class TestPauseResume:
     def test_health_silent_when_not_paused(self, tmp_project, capsys):
         roadrunner.cmd_health(argparse.Namespace())
         assert "PAUSED" not in capsys.readouterr().out
+
+
+class TestRetryBrief:
+    def test_summary_names_failing_command_and_output(self):
+        from roadrunner import cli
+
+        results = [
+            {"command": "ruff check", "passed": True},
+            {"command": "pytest", "passed": False, "returncode": 1, "stdout": "", "stderr": "E assert 1 == 2", "kind": "fail"},
+        ]
+        s = cli._failure_summary(results)
+        assert "`pytest`" in s and "E assert 1 == 2" in s and "ruff" not in s
+
+    def test_summary_empty_when_all_pass(self):
+        from roadrunner import cli
+
+        assert cli._failure_summary([{"command": "x", "passed": True}]) == ""
