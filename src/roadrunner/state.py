@@ -47,6 +47,7 @@ class RoadmapState(TypedDict, total=False):
     attempts_per_task: dict[str, int]
     updated_at: str
     base_branch: str
+    last_failure: dict | None  # issue #19: {task_id, failure, diff, repeats} signature of last failed validation
 
 
 # ── Paths and version ──────────────────────────────────────────────────────

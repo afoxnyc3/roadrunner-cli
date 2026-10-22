@@ -1108,6 +1108,28 @@ def cmd_start(args: argparse.Namespace) -> None:
     print(f"Started {args.task_id}. Iteration {state.get('iteration', 0)}.{branch_msg}")
 
 
+def _record_failure_signature(task_id: str, passed: bool, results: list[ValidationResult]) -> None:
+    """Persist the failure/diff signature (issue #19). Cleared on success."""
+    from roadrunner import failure_sig as fs
+
+    state = read_state()
+    if passed:
+        record = None
+    else:
+        prev = state.get("last_failure")
+        record = fs.update_record(prev, task_id, fs.failure_sig(results), fs.diff_sig(ROOT))
+    if record == state.get("last_failure"):
+        return
+    write_state(
+        state.get("current_task_id"),
+        state.get("iteration", 0),
+        state.get("attempts_per_task"),
+        extra={"last_failure": record},
+    )
+    if record and record["repeats"]:
+        trace_event("repeat_failure", task_id=task_id, extra=record)
+
+
 def cmd_validate(args: argparse.Namespace) -> None:
     tasks = load_tasks()
     task = get_task(tasks, args.task_id)
@@ -1117,6 +1139,7 @@ def cmd_validate(args: argparse.Namespace) -> None:
 
     trace_event("validate_start", task_id=args.task_id)
     passed, results = run_validation(task)
+    _record_failure_signature(args.task_id, passed, results)
     # ROAD-015: split results into baseline/task suites so the operator can
     # see at a glance which phase failed. Baseline failures are gate failures
     # (CI parity violation); task-specific failures are scope-specific to the
@@ -1171,6 +1194,7 @@ def cmd_complete(args: argparse.Namespace) -> None:
     if not task.get("validation_commands") and not get_baseline_validation():
         raise ValueError("Completion requires validation commands")
     passed, results = run_validation(task)
+    _record_failure_signature(args.task_id, passed, results)
     if not passed:
         print(f"Validation failed. Task {args.task_id} NOT marked done.")
         write_work_log(task, results, notes=args.notes or "")
@@ -1853,22 +1877,29 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
                 state["attempts_per_task"],
                 session_iteration=session_iteration,
             )
-            if task_attempts >= max_attempts:
+            last_failure = state.get("last_failure") or {}
+            repeated = last_failure.get("task_id") == in_flight["id"] and last_failure.get("repeats", 0) >= 1
+            if task_attempts >= max_attempts or repeated:
                 in_flight["status"] = "blocked"
                 save_tasks(tasks)
                 append_changelog(
                     in_flight["id"],
                     "blocked",
-                    notes=f"Auto-blocked after {task_attempts} attempts without completion.",
+                    notes=(
+                        f"Auto-blocked: identical failure and identical diff on consecutive validations (attempt {task_attempts})."
+                        if repeated and task_attempts < max_attempts
+                        else f"Auto-blocked after {task_attempts} attempts without completion."
+                    ),
                 )
                 trace_event(
                     "auto_block",
                     task_id=in_flight["id"],
                     iteration=iteration,
-                    extra={"attempts": task_attempts, "max_attempts": max_attempts},
+                    extra={"attempts": task_attempts, "max_attempts": max_attempts, "repeat_failure": repeated},
                 )
                 msg = (
-                    f"Task {in_flight['id']} auto-blocked after {task_attempts} attempts. "
+                    f"Task {in_flight['id']} auto-blocked after {task_attempts} attempts"
+                    f"{' (same failure, same diff, no progress)' if repeated and task_attempts < max_attempts else ''}. "
                     f"Move to the next task or output ROADMAP_COMPLETE on its own line."
                 )
                 print(json.dumps({"decision": "block", "reason": msg}, ensure_ascii=False))
