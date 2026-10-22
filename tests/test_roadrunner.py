@@ -27,6 +27,9 @@ def tmp_project(tmp_path):
     logs_dir.mkdir()
 
     tasks_data = {
+        # These fixtures use `true` as a stand-in "passing check"; the coverage
+        # floor (issue #18) has its own tests that set it explicitly.
+        "coverage_floor": 0,
         "tasks": [
             {
                 "id": "TASK-001",
@@ -2532,6 +2535,93 @@ class TestCompleteClearsState:
         # Iteration and attempts survive — they're loop-lifetime, not task-lifetime.
         assert state.get("iteration") == 3
         assert state.get("attempts_per_task", {}).get("TASK-002") == 1
+
+
+# ── Issue #18: coverage floor ────────────────────────────────────────────────
+
+
+class TestCoverageFloor:
+    """A pass needs at least ``coverage_floor`` checks that verified something.
+    ``true``/``echo`` and empty test runs exit 0 but assert nothing."""
+
+    @staticmethod
+    def _set_config(**kw):
+        data = yaml.safe_load(roadrunner.TASKS_FILE.read_text())
+        data.pop("coverage_floor", None)
+        data.update(kw)
+        roadrunner.TASKS_FILE.write_text(yaml.dump(data, sort_keys=False))
+
+    def test_only_noop_command_does_not_pass(self, tmp_project):
+        self._set_config()  # default floor (1)
+        roadrunner.write_state(None, 1)
+        passed, results = roadrunner.run_validation({"id": "T", "validation_commands": ["true"]})
+        assert not passed
+        assert results[0]["passed"] is True and results[0]["vacuous"] is True
+        assert results[-1]["kind"] == "vacuous"
+        assert "floor is 1" in results[-1]["stderr"]
+
+    def test_empty_test_run_with_exit_zero_is_vacuous(self, tmp_project):
+        self._set_config()
+        roadrunner.write_state(None, 1)
+        out = "============ no tests ran in 0.01s ============"
+        with patch(
+            "roadrunner.subprocess.run",
+            return_value=subprocess.CompletedProcess("pytest", 0, stdout=out, stderr=""),
+        ):
+            passed, results = roadrunner.run_validation({"id": "T", "validation_commands": ["pytest -q"]})
+        assert not passed
+        assert results[0]["vacuous"] is True
+
+    def test_substantive_check_meets_floor(self, tmp_project):
+        self._set_config()
+        roadrunner.write_state(None, 1)
+        passed, results = roadrunner.run_validation({"id": "T", "validation_commands": ["test -d ."]})
+        assert passed
+        assert not results[0].get("vacuous")
+        assert len(results) == 1
+
+    def test_one_substantive_among_noops_is_enough_for_floor_one(self, tmp_project):
+        self._set_config()
+        roadrunner.write_state(None, 1)
+        passed, _ = roadrunner.run_validation({"id": "T", "validation_commands": ["true", "test -d ."]})
+        assert passed
+
+    def test_floor_zero_allows_vacuous(self, tmp_project):
+        self._set_config(coverage_floor=0)
+        roadrunner.write_state(None, 1)
+        passed, _ = roadrunner.run_validation({"id": "T", "validation_commands": ["true"]})
+        assert passed
+
+    def test_higher_floor_requires_more_checks(self, tmp_project):
+        self._set_config(coverage_floor=2)
+        roadrunner.write_state(None, 1)
+        passed, results = roadrunner.run_validation({"id": "T", "validation_commands": ["test -d ."]})
+        assert not passed
+        assert "floor is 2" in results[-1]["stderr"]
+
+    def test_task_floor_overrides_project_floor(self, tmp_project):
+        self._set_config(coverage_floor=3)
+        roadrunner.write_state(None, 1)
+        task = {"id": "T", "validation_commands": ["true"], "coverage_floor": 0}
+        passed, _ = roadrunner.run_validation(task)
+        assert passed
+
+    def test_failing_command_still_reports_its_own_failure_not_floor(self, tmp_project):
+        self._set_config()
+        roadrunner.write_state(None, 1)
+        passed, results = roadrunner.run_validation({"id": "T", "validation_commands": ["false"]})
+        assert not passed
+        assert all(r.get("kind") != "vacuous" for r in results)
+
+    def test_complete_refuses_vacuous_task(self, tmp_git_project):
+        self._set_config()
+        roadrunner.cmd_start(argparse.Namespace(task_id="TASK-002"))
+        with pytest.raises(SystemExit) as exc:
+            roadrunner.cmd_complete(argparse.Namespace(task_id="TASK-002", notes=""))
+        assert exc.value.code == 1
+        tasks = yaml.safe_load(roadrunner.TASKS_FILE.read_text())["tasks"]
+        assert next(t for t in tasks if t["id"] == "TASK-002")["status"] != "done"
+        assert roadrunner.read_state().get("current_task_id") == "TASK-002"
 
 
 # ── Schema version (M2) ──────────────────────────────────────────────────────

@@ -1,3 +1,5 @@
+coverage_floor: 0  # fixture tasks use `true` as a stand-in check; see issue #18
+
 tasks:
   - id: SMOKE-001
     title: "Toy task one"

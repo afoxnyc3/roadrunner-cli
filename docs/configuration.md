@@ -193,6 +193,7 @@ tasks:                      # required; the ordered task list
 | `push_on_complete` | `"base"` / `"task"` / `"both"` / `"none"` | optional | What to push after a successful merge on `complete`. Default `"none"` (local only). |
 | `tasks`            | list                     | required  | Ordered task list. See field reference below.                                                                     |
 | `baseline_validation` | list[string]          | optional  | ROAD-015: project-wide validation gate. `roadrunner validate` runs every command here before any task's own `validation_commands`, short-circuiting on first failure. Set this to the exact commands your CI workflow runs so the loop's validate gate is structurally equal to CI. **Language-agnostic** — see the next section. |
+| `coverage_floor` | int | optional | Issue #18: minimum number of passing checks that actually verified something (default `1`, `0` disables). `true`/`echo`/`printf`/`exit`/`:` and test runs reporting `no tests ran`, `collected 0 items`, `Ran 0 tests` or `No tests found` pass but do not count; an unmet floor fails validation with a `vacuous` result so `complete` will not merge. Also settable per task; the task value wins. |
 
 ### Baseline validation (ROAD-015)
 
