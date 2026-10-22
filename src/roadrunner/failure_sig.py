@@ -17,7 +17,9 @@ from __future__ import annotations
 import hashlib
 import re
 import subprocess
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 _RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?"), "<ts>"),
@@ -38,7 +40,7 @@ def normalize(text: str) -> str:
     return text
 
 
-def failure_sig(results: list[dict]) -> str:
+def failure_sig(results: Sequence[Mapping[str, Any]]) -> str:
     """Signature of the failed commands in a validation run (command, exit
     code, kind, normalized output). Passing results are ignored."""
     parts = []
@@ -67,10 +69,15 @@ def diff_sig(cwd: Path) -> str:
 def update_record(prev: dict | None, task_id: str, fsig: str, dsig: str) -> dict:
     """Next ``last_failure`` state record. ``repeats`` counts consecutive
     observations identical to the previous one in both signatures."""
-    same = bool(prev) and prev.get("task_id") == task_id and prev.get("failure") == fsig and prev.get("diff") == dsig
+    same = (
+        prev is not None
+        and prev.get("task_id") == task_id
+        and prev.get("failure") == fsig
+        and prev.get("diff") == dsig
+    )
     return {
         "task_id": task_id,
         "failure": fsig,
         "diff": dsig,
-        "repeats": (prev.get("repeats", 0) + 1) if same else 0,
+        "repeats": (prev.get("repeats", 0) + 1) if same and prev is not None else 0,
     }
