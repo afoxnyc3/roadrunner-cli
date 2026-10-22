@@ -666,6 +666,22 @@ def _kind_note(r: ValidationResult) -> str:
     return ""
 
 
+VALIDATION_OUTPUT_KEEP = 1500  # chars kept from each end of captured validation output
+
+
+def _head_tail(text: str, keep: int = VALIDATION_OUTPUT_KEEP) -> str:
+    """Strip ``text``; if longer than 2*keep keep head and tail with a marker.
+
+    The tail matters most: pytest's summary line and the last traceback
+    frames are at the end, which a head-only cut discards.
+    """
+    text = text.strip()
+    if len(text) <= 2 * keep:
+        return text
+    omitted = len(text) - 2 * keep
+    return f"{text[:keep]}\n... [{omitted} chars omitted] ...\n{text[-keep:]}"
+
+
 def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
     """Run project baseline (if any), then the task's validation_commands.
 
@@ -705,14 +721,14 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
                 timeout=timeout,
             )
             passed = result.returncode == 0
-            stdout = result.stdout.strip()[:500]
-            stderr = result.stderr.strip()[:500]
+            stdout = _head_tail(result.stdout)
+            stderr = _head_tail(result.stderr)
             returncode = result.returncode
         except subprocess.TimeoutExpired as exc:
             passed = False
             timed_out = True
-            stdout = (exc.stdout or b"").decode(errors="replace").strip()[:500]
-            stderr = (exc.stderr or b"").decode(errors="replace").strip()[:500]
+            stdout = _head_tail((exc.stdout or b"").decode(errors="replace"))
+            stderr = _head_tail((exc.stderr or b"").decode(errors="replace"))
             returncode = -1
         elapsed = (time.monotonic() - t0) * 1000
         entry: ValidationResult = {

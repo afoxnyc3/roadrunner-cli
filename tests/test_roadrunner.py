@@ -945,6 +945,34 @@ class TestRunValidation:
         assert any(e["event"] == "validation_command" for e in events)
         assert any(e["event"] == "validation_complete" for e in events)
 
+    def test_long_output_keeps_head_and_tail(self, tmp_project):
+        """Issue #23: pytest's summary is at the END; a head-only cut loses it."""
+        task = {"id": "T", "validation_commands": ["noisy"]}
+        roadrunner.write_state(None, 1)
+        big = "HEAD-MARK " + "x" * 5000 + " 3 failed, 10 passed TAIL-MARK"
+        with patch(
+            "roadrunner.subprocess.run",
+            return_value=subprocess.CompletedProcess("noisy", 1, stdout=big, stderr=big),
+        ):
+            _, results = roadrunner.run_validation(task)
+        for key in ("stdout", "stderr"):
+            out = results[0][key]
+            assert out.startswith("HEAD-MARK")
+            assert out.endswith("TAIL-MARK")
+            assert "chars omitted" in out
+            assert len(out) < len(big)
+
+    def test_short_output_not_truncated(self, tmp_project):
+        task = {"id": "T", "validation_commands": ["quiet"]}
+        roadrunner.write_state(None, 1)
+        text = "y" * 2900
+        with patch(
+            "roadrunner.subprocess.run",
+            return_value=subprocess.CompletedProcess("quiet", 0, stdout=text, stderr=""),
+        ):
+            _, results = roadrunner.run_validation(task)
+        assert results[0]["stdout"] == text
+
     def test_timeout_treated_as_failure(self, tmp_project):
         task = {"id": "T", "validation_commands": ["slow_cmd"], "validation_timeout": 5}
         roadrunner.write_state(None, 1)
