@@ -464,3 +464,49 @@ def test_auth_preflight_stops_before_attempts_and_budget(project, monkeypatch):
     assert saved["reserved_usd"] == 0
     assert saved["items"][0]["attempts"] == []
     assert "authentication unavailable inside" in saved["items"][0]["reason"]
+
+
+def test_retry_context_empty_on_first_attempt(tmp_path):
+    item = {"attempts": [{"number": 1}]}
+    assert runner.retry_context(item, tmp_path) == ""
+
+
+def test_retry_context_includes_reason_and_gate_log(tmp_path):
+    log = tmp_path / "gate.log"
+    log.write_text("AssertionError: expected fixed\n")
+    item = {
+        "attempts": [
+            {
+                "number": 1,
+                "outcome": "failed",
+                "failure_category": "validation",
+                "reason": "Validation failed: pytest",
+                "failure_log": str(log),
+            },
+            {"number": 2},
+        ]
+    }
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    text = runner.retry_context(item, scratch)
+    assert "Previous attempt 1 failed (validation): Validation failed: pytest" in text
+    assert str(scratch / "previous-gate.log") in text
+    assert "AssertionError" in (scratch / "previous-gate.log").read_text()
+
+
+def test_worker_command_appends_previous_to_prompt(tmp_path):
+    policy = {"adapter": "claude"}
+    cmd = runner.worker_command(policy, {"id": "T"}, {"budget_usd": 1}, tmp_path, "\n\nPrevious attempt 1 failed")
+    assert cmd[2].endswith("Previous attempt 1 failed")
+
+
+def test_retry_records_failure_log(project):
+    agent = project.parent / "agent.py"
+    agent.write_text(
+        "import os\nfrom pathlib import Path\nPath('one').write_text('bad' if os.environ['ROADRUNNER_ATTEMPT'] == '1' else 'fixed')\n"
+    )
+    result = invoke(project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    saved, _ = state(project)
+    first = saved["items"][0]["attempts"][0]
+    assert first["failure_log"].endswith("-gate-0.log")
