@@ -19,7 +19,7 @@ def project(tmp_path):
     shutil.copytree(SOURCE / 'hooks', tmp_path / 'hooks')
     task = dict(id='TASK-001', title='Test', status='todo', depends_on=[],
                 goal='Test', acceptance_criteria=['verified'], files_expected=['result'], validation_commands=['true'])
-    (tmp_path / 'tasks/tasks.yaml').write_text(yaml.safe_dump({'tasks': [task]}))
+    (tmp_path / 'tasks/tasks.yaml').write_text(yaml.safe_dump({'coverage_floor': 0, 'tasks': [task]}))
     return tmp_path
 
 

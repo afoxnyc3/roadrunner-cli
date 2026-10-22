@@ -12,6 +12,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Coverage floor (#18)** — a task no longer passes validation on checks that
+  verified nothing. Commands that are bare no-ops (`true`, `echo`, ...) or test
+  runs that report an empty run are marked `vacuous` and do not count toward
+  `coverage_floor` (default 1, set in `tasks.yaml` top level or per task; `0`
+  disables). **Behaviour change:** a task whose only validation is `true`/`echo`
+  now fails with a `vacuous` result; set `coverage_floor: 0` to keep the old behaviour.
 - **Project-wide baseline validation suite (ROAD-015)** — `tasks.yaml` accepts
   an optional top-level `baseline_validation: list[str]` field. `roadrunner
   validate` runs each command in this list before the active task's own

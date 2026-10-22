@@ -82,7 +82,8 @@ class ValidationResult(TypedDict, total=False):
     stdout: str
     stderr: str
     timed_out: bool
-    kind: str  # failures only: "fail" | "timeout" | "env" (see classify_validation)
+    kind: str  # failures only: "fail" | "timeout" | "env" | "vacuous" (see classify_validation)
+    vacuous: bool  # passed, but ran nothing that asserts anything (issue #18)
     phase: str  # ROAD-015: "baseline" or "task" — which suite the command ran in
 
 
@@ -663,7 +664,40 @@ def _kind_note(r: ValidationResult) -> str:
         return "timed out (raise validation_timeout or check for a hang), not a test failure"
     if kind == "env":
         return "command could not run (missing or non-executable), environment problem not a code failure"
+    if kind == "vacuous":
+        return "coverage floor not met: the checks that passed verified nothing, so this is not a pass"
     return ""
+
+
+DEFAULT_COVERAGE_FLOOR = 1
+
+# Commands that exit 0 without checking anything.
+_NOOP_COMMANDS = frozenset({"true", ":", "echo", "printf", "exit"})
+# Test runners that report an empty run on stdout and may still exit 0
+# (wrapper scripts, ``|| true``, runners configured not to fail on empty).
+_EMPTY_RUN_RE = re.compile(r"\bno tests ran\b|collected 0 items|\bRan 0 tests\b|\bNo tests found\b", re.IGNORECASE)
+
+
+def is_vacuous(cmd: str, stdout: str) -> bool:
+    """True when a command that exited 0 verified nothing (issue #18).
+
+    Deterministic and conservative: a bare no-op command (``true``, ``echo``),
+    or output where a test runner says it ran no tests. Anything else counts
+    as substantive.
+    """
+    parts = cmd.strip().split(None, 1)
+    if parts and parts[0] in _NOOP_COMMANDS:
+        return True
+    return bool(_EMPTY_RUN_RE.search(stdout))
+
+
+def get_coverage_floor(task: Task) -> int:
+    """Minimum substantive passing checks required. Task key overrides the
+    top-level ``coverage_floor`` in tasks.yaml; default 1; 0 disables."""
+    for raw in (task.get("coverage_floor"), load_project_config().get("coverage_floor")):
+        if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
+            return raw
+    return DEFAULT_COVERAGE_FLOOR
 
 
 def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
@@ -725,6 +759,8 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
         }
         if timed_out:
             entry["timed_out"] = True
+        if passed and is_vacuous(cmd, stdout):
+            entry["vacuous"] = True
         kind = None if passed else classify_validation(returncode, timed_out)
         if kind:
             entry["kind"] = kind
@@ -757,6 +793,28 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
                 task_passed = False
 
     all_passed = baseline_passed and task_passed
+    # Coverage floor (issue #18): "ok" (nothing that ran failed) is not
+    # "verified" (enough checks that assert something actually passed).
+    floor = get_coverage_floor(task)
+    substantive = sum(1 for r in results if r["passed"] and not r.get("vacuous"))
+    if all_passed and substantive < floor:
+        all_passed = False
+        task_passed = False
+        results.append(
+            {
+                "command": "<coverage floor>",
+                "passed": False,
+                "returncode": 0,
+                "stdout": "",
+                "stderr": (
+                    f"only {substantive} substantive passing check(s), floor is {floor}. "
+                    "Checks like true/echo or an empty test run do not count; add a real "
+                    "validation command or lower coverage_floor."
+                ),
+                "phase": "task",
+                "kind": "vacuous",
+            }
+        )
     trace_event(
         "validation_complete",
         task_id=task["id"],
@@ -766,6 +824,8 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
             "total": len(results),
             "baseline_passed": baseline_passed,
             "task_passed": task_passed,
+            "substantive": substantive,
+            "coverage_floor": floor,
         },
     )
     return all_passed, results
