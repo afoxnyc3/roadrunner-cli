@@ -510,3 +510,70 @@ def test_retry_records_failure_log(project):
     saved, _ = state(project)
     first = saved["items"][0]["attempts"][0]
     assert first["failure_log"].endswith("-gate-0.log")
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("API Error: 529 overloaded_error", "transient"),
+        ("rate limit exceeded, retry later", "transient"),
+        ("connect ECONNRESET 1.2.3.4:443", "transient"),
+        ("Not logged in. Run claude auth login", "auth"),
+        ("HTTP 401 Unauthorized", "auth"),
+        ("HTTP 403 rate limit", "auth"),
+        ("tests failed: assertion error", "agent"),
+        ("File \"app.py\", line 401, in handler", "agent"),
+        ("expected 500 rows, got 3", "agent"),
+        ("", "agent"),
+    ],
+)
+def test_classify_worker_failure(text, expected):
+    assert runner.classify_worker_failure(text) == expected
+
+
+def _flaky_agent(project, stderr_text, writes_first=False):
+    agent = project.parent / "agent.py"
+    agent.write_text(
+        "import os, sys\nfrom pathlib import Path\n"
+        "if os.environ['ROADRUNNER_ATTEMPT'] == '1':\n"
+        + ("    Path('one').write_text('partial')\n" if writes_first else "")
+        + f"    sys.stderr.write({stderr_text!r})\n    sys.exit(1)\n"
+        "Path('one').write_text('fixed')\n"
+    )
+    policy_path = project.parent / "policy.json"
+    policy = json.loads(policy_path.read_text())
+    policy["max_attempts"] = 1
+    policy_path.write_text(json.dumps(policy))
+
+
+def test_transient_failure_retries_free_when_no_files_changed(project):
+    _flaky_agent(project, "API Error: 529 overloaded")
+    result = invoke(project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    saved, _ = state(project)
+    attempts = saved["items"][0]["attempts"]
+    assert [a["outcome"] for a in attempts] == ["failed", "resolved"]
+    assert attempts[0]["uncharged"] is True
+    assert attempts[0]["failure_category"] == "transient"
+    assert saved["items"][0]["phase"] == "resolved"
+
+
+def test_transient_failure_is_charged_when_files_changed(project):
+    _flaky_agent(project, "API Error: 529 overloaded", writes_first=True)
+    invoke(project)
+    saved, _ = state(project)
+    attempts = saved["items"][0]["attempts"]
+    assert not attempts[0].get("uncharged")
+    assert saved["items"][0]["phase"] == "blocked"
+    assert len(attempts) == 1
+
+
+def test_auth_failure_blocks_immediately_without_charging(project):
+    _flaky_agent(project, "Not logged in. Run claude auth login")
+    invoke(project)
+    saved, _ = state(project)
+    item = saved["items"][0]
+    assert item["phase"] == "blocked"
+    assert len(item["attempts"]) == 1
+    assert item["attempts"][0]["failure_category"] == "auth"
+    assert item["attempts"][0]["uncharged"] is True
