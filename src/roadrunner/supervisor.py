@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import os
+import pty
 import re
 from pathlib import Path
 import shutil
@@ -20,6 +21,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 
@@ -187,20 +189,141 @@ def terminate(process):
     process.wait()
 
 
-def execute(command, work, scratch, policy, deadline, log, env, network=False, stderr_log=None):
-    """File-backed output, bounded wall time, cancellation, descendant cleanup."""
+_DENY_RE = re.compile(r"Sandbox: (?P<proc>\S+?)\((?P<pid>\d+)\) deny\(\d+\) (?P<op>\S+)\s*(?P<target>.*)$")
+
+
+def session_pids(pgid):
+    """PIDs currently in a process group; empty on any failure."""
+    try:
+        out = subprocess.run(["ps", "-axo", "pid=,pgid="], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return set()
+    pids = set()
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2 and parts[1] == str(pgid):
+            pids.add(int(parts[0]))
+    return pids
+
+
+def parse_sandbox_denials(text, pids, limit=20):
+    """Seatbelt deny lines from `log show` output, restricted to the attempt's processes."""
+    found = []
+    seen = set()
+    for line in text.splitlines():
+        match = _DENY_RE.search(line)
+        if not match or int(match["pid"]) not in pids:
+            continue
+        entry = dict(process=match["proc"], operation=match["op"], target=match["target"].strip())
+        key = (entry["operation"], entry["target"])
+        if key in seen:
+            continue
+        seen.add(key)
+        found.append(entry)
+        if len(found) >= limit:
+            break
+    return found
+
+
+class DenialStream:
+    """Live Seatbelt denial stream from `log stream`, read through a pty.
+
+    `log show` cannot be used after the fact: the kernel collapses repeated reports and
+    recent events are visible for about a second. `log stream` block-buffers when stdout is
+    a file or pipe (header and events can arrive 15s late), so it runs on a pty instead.
+    """
+
+    def __init__(self):
+        self.data = bytearray()
+        self.process = None
+        self._master = None
+        self._thread = None
+
+    def start(self, wait=8):
+        if sys.platform != "darwin":
+            return self
+        try:
+            master, slave = pty.openpty()
+            self.process = subprocess.Popen(
+                ["/usr/bin/log", "stream", "--style", "compact", "--predicate", 'sender == "Sandbox"'],
+                stdout=slave, stderr=slave, stdin=subprocess.DEVNULL, start_new_session=True,
+            )
+        except OSError:
+            self.process = None
+            return self
+        os.close(slave)
+        self._master = master
+        self._thread = threading.Thread(target=self._pump, daemon=True)
+        self._thread.start()
+        deadline = time.time() + wait
+        while time.time() < deadline and b"Timestamp" not in self.data and self.process.poll() is None:
+            time.sleep(0.05)
+        return self
+
+    def _pump(self):
+        while True:
+            try:
+                chunk = os.read(self._master, 65536)
+            except OSError:
+                return
+            if not chunk:
+                return
+            self.data.extend(chunk)
+
+    def stop(self, pids):
+        if self.process is None:
+            return []
+        time.sleep(1)  # let the kernel flush the last reports
+        try:
+            os.killpg(self.process.pid, signal.SIGTERM)
+            self.process.wait(timeout=5)
+        except (ProcessLookupError, subprocess.SubprocessError, OSError):
+            pass
+        if self._thread:
+            self._thread.join(timeout=2)
+        try:
+            os.close(self._master)
+        except OSError:
+            pass
+        return parse_sandbox_denials(self.data.decode(errors="replace"), pids)
+
+
+def execute(command, work, scratch, policy, deadline, log, env, network=False, stderr_log=None, denials=None):
+    """File-backed output, bounded wall time, cancellation, descendant cleanup.
+
+    When `denials` is a list and the sandbox is enforced, Seatbelt denial events for the
+    command's processes are appended to it after the command ends.
+    """
     command = sandbox_command(command, work, scratch, policy, network)
     command = [sys.executable, "-I", str(Path(__file__).with_name("process_guard.py")), *command]
     with log.open("wb") as output, stderr_log.open("wb") if stderr_log else nullcontext(subprocess.STDOUT) as error:
-        process = subprocess.Popen(command, cwd=work, env=env, stdout=output, stderr=error, stdin=subprocess.PIPE, start_new_session=True)
+        track = denials is not None and policy["sandbox"] != "fixture"
+        waited = time.time()
+        stream = DenialStream().start() if track else None
+        deadline += time.time() - waited  # stream start-up must not eat the attempt's time
+        try:
+            process = subprocess.Popen(
+                command, cwd=work, env=env, stdout=output, stderr=error, stdin=subprocess.PIPE, start_new_session=True
+            )
+        except BaseException:
+            if stream:
+                stream.stop(set())
+            raise
+        pids = {process.pid}
+        tick = 0
         try:
             while process.poll() is None:
                 if time.time() >= deadline:
                     raise TimeoutError(f"Deadline exceeded; inspect {log}")
+                if stream and tick % 2 == 0:
+                    pids |= session_pids(process.pid)
+                tick += 1
                 time.sleep(0.05)
             return process.returncode
         finally:
             terminate(process)
+            if stream:
+                denials.extend(stream.stop(pids))
             if process.stdin:
                 process.stdin.close()
 
@@ -499,6 +622,8 @@ def drive(project, directory, state):
             attempt["worker_log"] = str(log)
             attempt["worker_stderr"] = str(error_log)
             deadline = min(state["deadline"], time.time() + policy["attempt_seconds"])
+            denials = []
+            attempt["sandbox_denials"] = denials
             code = execute(
                 worker_command(policy, task, attempt, scratch, retry_context(item, scratch)),
                 work,
@@ -509,6 +634,7 @@ def drive(project, directory, state):
                 env,
                 network=policy["adapter"] == "claude",
                 stderr_log=error_log,
+                denials=denials,
             )
             attempt["worker_log"] = str(log)
             if code:
@@ -622,6 +748,12 @@ def drive(project, directory, state):
             attempt["outcome"] = "failed"
             attempt["failure_category"] = failure_category
             attempt["reason"] = str(exc)
+            if not attempt.get("sandbox_denials"):
+                attempt.pop("sandbox_denials", None)
+            elif failure_category in ("infrastructure", "implementation"):
+                attempt["failure_category"] = "sandbox"
+                shown = "; ".join(f"{d['operation']} {d['target']}" for d in attempt["sandbox_denials"][:3])
+                attempt["reason"] += f" Sandbox denied: {shown}"
             klass = attempt.get("worker_failure_class")
             no_change = failure_category == "infrastructure" and not changed_paths(work) if work.exists() else True
             free_used = any(a.get("uncharged") for a in item["attempts"][:-1])
@@ -646,7 +778,7 @@ def drive(project, directory, state):
                 attempt["uncharged"] = True
                 state["reserved_usd"] -= attempt["budget_usd"] - (attempt.get("cost_usd") or 0)
             if item["phase"] == "integrating":
-                transition(item, "blocked", str(exc))
+                transition(item, "blocked", attempt["reason"])
             else:
                 # Preserve the failed implementation but remove controller-created commit
                 # from retry HEAD. Its diff remains available for the next worker.
@@ -655,7 +787,7 @@ def drive(project, directory, state):
                         git(work, "reset", "--mixed", base)
                     except ValueError:
                         pass
-                transition(item, "ready", str(exc))
+                transition(item, "ready", attempt["reason"])
         attempt["finished_at"] = time.time()
         checkpoint(directory, state)
     checkpoint(directory, state)

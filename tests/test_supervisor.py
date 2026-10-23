@@ -635,3 +635,49 @@ def test_worker_summary_recorded_and_progress_still_resolves(project, monkeypatc
     saved, _ = state(project)
     assert saved["items"][0]["phase"] == "resolved"
     assert saved["items"][0]["attempts"][0]["worker_summary"].startswith("Done.")
+
+
+SAMPLE_LOG = """Timestamp Ty Process[PID:TID]
+2026-10-22 23:52:12.220 E  kernel[0:1] (Sandbox) Sandbox: python3.14(4242) deny(1) file-write-create /Users/x/.ssh/evil
+2026-10-22 23:52:12.221 E  kernel[0:1] (Sandbox) Sandbox: python3.14(4242) deny(1) file-write-create /Users/x/.ssh/evil
+2026-10-22 23:52:12.222 E  kernel[0:1] (Sandbox) Sandbox: Chrome(999) deny(1) file-read-data /unrelated
+2026-10-22 23:52:12.223 E  kernel[0:1] (Sandbox) Sandbox: sh(4243) deny(1) network-outbound 1.2.3.4:443
+"""
+
+
+def test_parse_sandbox_denials_filters_pids_and_dedupes():
+    found = runner.parse_sandbox_denials(SAMPLE_LOG, {4242, 4243})
+    assert found == [
+        {"process": "python3.14", "operation": "file-write-create", "target": "/Users/x/.ssh/evil"},
+        {"process": "sh", "operation": "network-outbound", "target": "1.2.3.4:443"},
+    ]
+    assert runner.parse_sandbox_denials(SAMPLE_LOG, set()) == []
+    assert len(runner.parse_sandbox_denials(SAMPLE_LOG, {4242, 4243}, limit=1)) == 1
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS only")
+def test_sandbox_denial_is_recorded_and_categorised(project, monkeypatch, tmp_path):
+    outside = tmp_path / "outside-sandbox.txt"
+    binaries = project.parent / "fake-bin"
+    binaries.mkdir()
+    executable = binaries / "claude"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json,sys\nfrom pathlib import Path\n"
+        "if sys.argv[1:]==['auth','status']: print(json.dumps({'loggedIn':True})); sys.exit(0)\n"
+        f"try: Path({str(outside)!r}).write_text('x')\nexcept OSError: pass\nimport time; time.sleep(1)\n"
+        "print(json.dumps({'session_id':'s','total_cost_usd':0.1,'is_error':False,'result':'done'}))\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
+    path = project.parent / "policy.json"
+    policy = json.loads(path.read_text())
+    policy.update(adapter="claude", sandbox="macos", max_attempts=1, attempt_seconds=30)
+    path.write_text(json.dumps(policy))
+    invoke(project)
+    saved, _ = state(project)
+    attempt = saved["items"][0]["attempts"][0]
+    assert not outside.exists()
+    assert attempt["failure_category"] == "sandbox"
+    assert any(d["target"] == str(outside) for d in attempt["sandbox_denials"]), attempt["sandbox_denials"]
+    assert "Sandbox denied" in attempt["reason"]
