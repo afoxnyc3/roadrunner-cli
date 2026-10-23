@@ -2,8 +2,10 @@
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -953,10 +955,7 @@ class TestRunValidation:
         task = {"id": "T", "validation_commands": ["noisy"]}
         roadrunner.write_state(None, 1)
         big = "HEAD-MARK " + "x" * 5000 + " 3 failed, 10 passed TAIL-MARK"
-        with patch(
-            "roadrunner.subprocess.run",
-            return_value=subprocess.CompletedProcess("noisy", 1, stdout=big, stderr=big),
-        ):
+        with patch("roadrunner._run_bounded", return_value=(1, big, big, False)):
             _, results = roadrunner.run_validation(task)
         for key in ("stdout", "stderr"):
             out = results[0][key]
@@ -969,20 +968,14 @@ class TestRunValidation:
         task = {"id": "T", "validation_commands": ["quiet"]}
         roadrunner.write_state(None, 1)
         text = "y" * 2900
-        with patch(
-            "roadrunner.subprocess.run",
-            return_value=subprocess.CompletedProcess("quiet", 0, stdout=text, stderr=""),
-        ):
+        with patch("roadrunner._run_bounded", return_value=(0, text, "", False)):
             _, results = roadrunner.run_validation(task)
         assert results[0]["stdout"] == text
 
     def test_timeout_treated_as_failure(self, tmp_project):
         task = {"id": "T", "validation_commands": ["slow_cmd"], "validation_timeout": 5}
         roadrunner.write_state(None, 1)
-        exc = subprocess.TimeoutExpired("slow_cmd", 5)
-        exc.stdout = b"partial out"
-        exc.stderr = b"partial err"
-        with patch("roadrunner.subprocess.run", side_effect=exc):
+        with patch("roadrunner._run_bounded", return_value=(-1, "partial out", "partial err", True)):
             passed, results = roadrunner.run_validation(task)
         assert not passed
         assert len(results) == 1
@@ -997,8 +990,7 @@ class TestRunValidation:
         task = {"id": "T", "validation_commands": ["false", "definitely_not_a_cmd_xyz"]}
         _, results = roadrunner.run_validation(task)
         assert [r["kind"] for r in results] == ["fail", "env"]
-        exc = subprocess.TimeoutExpired("x", 1)
-        with patch("roadrunner.subprocess.run", side_effect=exc):
+        with patch("roadrunner._run_bounded", return_value=(-1, "", "", True)):
             _, results = roadrunner.run_validation({"id": "T", "validation_commands": ["x"]})
         assert results[0]["kind"] == "timeout"
         _, ok = roadrunner.run_validation({"id": "T", "validation_commands": ["true"]})
@@ -1018,33 +1010,22 @@ class TestRunValidation:
         assert roadrunner.classify_validation(-1, True) == "timeout"
 
     def test_timeout_with_none_output(self, tmp_project):
-        """TimeoutExpired with stdout=None should not crash."""
+        """A timeout with no captured output should not crash."""
         task = {"id": "T", "validation_commands": ["hang"], "validation_timeout": 1}
         roadrunner.write_state(None, 1)
-        exc = subprocess.TimeoutExpired("hang", 1)
-        exc.stdout = None
-        exc.stderr = None
-        with patch("roadrunner.subprocess.run", side_effect=exc):
+        with patch("roadrunner._run_bounded", return_value=(-1, "", "", True)):
             passed, results = roadrunner.run_validation(task)
         assert not passed
         assert results[0]["stdout"] == ""
         assert results[0]["stderr"] == ""
 
     def test_timeout_uses_task_value(self, tmp_project):
-        """validation_timeout from task dict is passed to subprocess.run."""
+        """validation_timeout from task dict is passed to the bounded runner."""
         task = {"id": "T", "validation_commands": ["true"], "validation_timeout": 42}
         roadrunner.write_state(None, 1)
-        with patch("roadrunner.subprocess.run") as mock_run:
-            mock_run.return_value = subprocess.CompletedProcess("true", 0, stdout="", stderr="")
+        with patch("roadrunner._run_bounded", return_value=(0, "", "", False)) as mock_run:
             roadrunner.run_validation(task)
-        mock_run.assert_called_once_with(
-            "true",
-            shell=True,
-            capture_output=True,
-            text=True,
-            cwd=roadrunner.ROOT,
-            timeout=42,
-        )
+        mock_run.assert_called_once_with("true", shell=True, timeout=42)
 
 
 # ── ROAD-015: baseline_validation suite ──────────────────────────────────────
@@ -2564,10 +2545,7 @@ class TestCoverageFloor:
         self._set_config()
         roadrunner.write_state(None, 1)
         out = "============ no tests ran in 0.01s ============"
-        with patch(
-            "roadrunner.subprocess.run",
-            return_value=subprocess.CompletedProcess("pytest", 0, stdout=out, stderr=""),
-        ):
+        with patch("roadrunner._run_bounded", return_value=(0, out, "", False)):
             passed, results = roadrunner.run_validation({"id": "T", "validation_commands": ["pytest -q"]})
         assert not passed
         assert results[0]["vacuous"] is True
@@ -2916,3 +2894,58 @@ class TestRetryBrief:
         from roadrunner import cli
 
         assert cli._failure_summary([{"command": "x", "passed": True}]) == ""
+
+
+# ── Issue 16: bounded legacy subprocesses ────────────────────────────────────
+
+
+class TestBoundedSubprocesses:
+    def test_validation_timeout_kills_descendants(self, tmp_project, tmp_path):
+        """A validation shell that spawns a child must leave no survivor after a timeout."""
+        pidfile = tmp_path / "child.pid"
+        cmd = f"sleep 300 & echo $! > {pidfile}; wait"
+        roadrunner.write_state(None, 1)
+        passed, results = roadrunner.run_validation({"id": "T", "validation_commands": [cmd], "validation_timeout": 1})
+        assert not passed
+        assert results[0]["timed_out"] is True
+        assert results[0]["kind"] == "timeout"
+        pid = int(pidfile.read_text())
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.1)
+        else:
+            os.kill(pid, 9)
+            pytest.fail("validation child survived the timeout")
+
+    def test_git_hang_fails_actionably_within_limit(self, tmp_git_project, monkeypatch, tmp_path):
+        """A git subprocess that hangs returns a failure inside the bound, never success."""
+        fake = tmp_path / "bin"
+        fake.mkdir()
+        git = fake / "git"
+        git.write_text("#!/bin/sh\nsleep 300\n")
+        git.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{fake}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("ROADRUNNER_GIT_TIMEOUT", "1")
+        t0 = time.monotonic()
+        result = roadrunner._git("push", "origin", "main", check=False)
+        assert time.monotonic() - t0 < 10
+        assert result.returncode == roadrunner.GIT_TIMEOUT_RETURNCODE
+        assert "timed out after 1s" in result.stderr
+        assert "ROADRUNNER_GIT_TIMEOUT" in result.stderr
+        with pytest.raises(subprocess.CalledProcessError):
+            roadrunner._git("push", "origin", "main")
+
+    def test_git_healthy_path_unchanged(self, tmp_git_project):
+        result = roadrunner._git("rev-parse", "--is-inside-work-tree")
+        assert result.returncode == 0
+        assert result.stdout.strip() == "true"
+
+    def test_git_timeout_env_invalid_falls_back(self, monkeypatch):
+        monkeypatch.setenv("ROADRUNNER_GIT_TIMEOUT", "nope")
+        assert roadrunner._git_timeout() == roadrunner.DEFAULT_GIT_TIMEOUT
+        monkeypatch.setenv("ROADRUNNER_GIT_TIMEOUT", "-3")
+        assert roadrunner._git_timeout() == roadrunner.DEFAULT_GIT_TIMEOUT
