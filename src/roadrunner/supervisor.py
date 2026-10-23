@@ -28,7 +28,7 @@ import yaml
 TERMINAL = {"resolved", "blocked", "needs_input", "failed", "cancelled"}
 TRANSITIONS = {
     "ready": {"running", "blocked", "needs_input", "cancelled"},
-    "running": {"validating", "ready", "blocked", "failed", "cancelled"},
+    "running": {"validating", "ready", "blocked", "needs_input", "failed", "cancelled"},
     "validating": {"integrating", "ready", "blocked", "failed", "cancelled"},
     "integrating": {"resolved", "blocked", "failed", "cancelled"},
 }
@@ -297,6 +297,18 @@ _AUTH_RE = re.compile(
 )
 
 
+_BLOCKER_RE = re.compile(
+    r"\b(?:i(?:'m| am) (?:blocked|unable)|cannot proceed|can't proceed|unable to (?:proceed|continue)|"
+    r"(?:need|needs|require|requires|missing) (?:more |further |additional )?(?:clarification|information|input|context|access)|"
+    r"please (?:clarify|specify|provide)|ambiguous|unclear (?:which|what|whether))",
+    re.IGNORECASE,
+)
+
+
+def states_blocker(text):
+    return bool(text) and bool(_BLOCKER_RE.search(text))
+
+
 def _tail(path, limit=4000):
     try:
         return Path(path).read_text(errors="replace")[-limit:]
@@ -506,6 +518,9 @@ def drive(project, directory, state):
                 response = json.loads(log.read_text())
                 attempt["session_id"] = response.get("session_id")
                 attempt["cost_usd"] = response.get("total_cost_usd")
+                result_text = response.get("result")
+                if isinstance(result_text, str) and result_text.strip():
+                    attempt["worker_summary"] = result_text.strip()[:2000]
                 cost = attempt["cost_usd"]
                 if (
                     response.get("is_error")
@@ -528,6 +543,9 @@ def drive(project, directory, state):
                 raise ValueError("Frozen gate files changed. Restore protected files before retry.")
             paths = inspect_scope(work, task, policy["protected_paths"])
             if not paths:
+                if states_blocker(attempt.get("worker_summary")):
+                    attempt["blocker"] = True
+                    raise ValueError("Worker reported it is blocked: " + attempt["worker_summary"][:500])
                 raise ValueError("No implementation progress; agent claims alone cannot resolve a task")
             transition(item, "validating")
             checkpoint(directory, state)
@@ -612,6 +630,14 @@ def drive(project, directory, state):
                 attempt["uncharged"] = True
                 state["reserved_usd"] -= attempt["budget_usd"] - (attempt.get("cost_usd") or 0)
                 transition(item, "blocked", f"Worker authentication failed; a retry cannot help. Fix credentials and plan a new run. {exc}")
+                attempt["finished_at"] = time.time()
+                checkpoint(directory, state)
+                continue
+            if attempt.get("blocker") and item["phase"] == "running":
+                attempt["failure_category"] = "needs_input"
+                attempt["uncharged"] = True
+                state["reserved_usd"] -= attempt["budget_usd"] - (attempt.get("cost_usd") or 0)
+                transition(item, "needs_input", str(exc))
                 attempt["finished_at"] = time.time()
                 checkpoint(directory, state)
                 continue

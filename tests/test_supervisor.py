@@ -577,3 +577,61 @@ def test_auth_failure_blocks_immediately_without_charging(project):
     assert len(item["attempts"]) == 1
     assert item["attempts"][0]["failure_category"] == "auth"
     assert item["attempts"][0]["uncharged"] is True
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("I am blocked: the API key name is not in the task.", True),
+        ("Please clarify which endpoint to change.", True),
+        ("The spec is ambiguous about the return type.", True),
+        ("Done. Implemented the change and updated the tests.", False),
+        ("", False),
+        (None, False),
+    ],
+)
+def test_states_blocker(text, expected):
+    assert runner.states_blocker(text) is expected
+
+
+def _claude_agent(project, monkeypatch, result, writes):
+    binaries = project.parent / "fake-bin"
+    binaries.mkdir()
+    executable = binaries / "claude"
+    executable.write_text(
+        f"#!{sys.executable}\n"
+        "import json,sys\nfrom pathlib import Path\n"
+        "if sys.argv[1:]==['auth','status']: print(json.dumps({'loggedIn':True})); sys.exit(0)\n"
+        f"if {writes!r}: Path('one').write_text('fixed')\n"
+        f"print(json.dumps({{'session_id':'s','total_cost_usd':0.1,'is_error':False,'result':{result!r}}}))\n"
+    )
+    executable.chmod(0o755)
+    monkeypatch.setenv("PATH", str(binaries) + os.pathsep + os.environ["PATH"])
+    path = project.parent / "policy.json"
+    policy = json.loads(path.read_text())
+    policy.update(adapter="claude", sandbox="macos")
+    path.write_text(json.dumps(policy))
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS Claude adapter boundary")
+def test_no_change_blocker_goes_to_needs_input_without_retry(project, monkeypatch):
+    _claude_agent(project, monkeypatch, "I am blocked: which file should hold the config?", writes=False)
+    invoke(project)
+    saved, _ = state(project)
+    item = saved["items"][0]
+    assert item["phase"] == "needs_input"
+    assert len(item["attempts"]) == 1
+    attempt = item["attempts"][0]
+    assert attempt["failure_category"] == "needs_input"
+    assert attempt["uncharged"] is True
+    assert "which file" in attempt["worker_summary"]
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="macOS Claude adapter boundary")
+def test_worker_summary_recorded_and_progress_still_resolves(project, monkeypatch):
+    _claude_agent(project, monkeypatch, "Done. This is ambiguous wording but files changed.", writes=True)
+    result = invoke(project)
+    assert result.returncode == 0, result.stdout + result.stderr
+    saved, _ = state(project)
+    assert saved["items"][0]["phase"] == "resolved"
+    assert saved["items"][0]["attempts"][0]["worker_summary"].startswith("Done.")
