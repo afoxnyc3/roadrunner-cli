@@ -284,6 +284,37 @@ def retry_context(item, scratch):
     return text + "\nFix the cause above; do not repeat the same change."
 
 
+_TRANSIENT_RE = re.compile(
+    r"overloaded|\b(?:429|500|502|503|504|529)\b|rate.?limit|too many requests|econnreset|etimedout|econnrefused|"
+    r"enotfound|socket hang up|network (?:error|unreachable)|temporarily unavailable|connection (?:reset|refused|error)",
+    re.IGNORECASE,
+)
+_AUTH_RE = re.compile(
+    r"not logged in|\b401\b|\b403\b|unauthori[sz]ed|authentication|invalid api key|invalid x-api-key|claude auth login|credit balance",
+    re.IGNORECASE,
+)
+
+
+def _tail(path, limit=4000):
+    try:
+        return Path(path).read_text(errors="replace")[-limit:]
+    except OSError:
+        return ""
+
+
+def classify_worker_failure(*texts):
+    """'auth' | 'transient' | 'agent' from worker output. Auth wins over transient (a 403 is not retryable).
+
+    Deliberately conservative: anything unrecognised is 'agent', which keeps the
+    old behaviour (charged attempt, normal retry)."""
+    blob = "\n".join(t for t in texts if t)
+    if _AUTH_RE.search(blob):
+        return "auth"
+    if _TRANSIENT_RE.search(blob):
+        return "transient"
+    return "agent"
+
+
 def worker_command(policy, task, attempt, scratch, previous=""):
     if policy["adapter"] == "fixture":
         command = policy.get("fixture_command")
@@ -415,7 +446,8 @@ def drive(project, directory, state):
             checkpoint(directory, state)
             continue
         remaining = policy["max_budget_usd"] - state["reserved_usd"]
-        if len(item["attempts"]) >= policy["max_attempts"] or remaining <= 0.000001:
+        charged = [a for a in item["attempts"] if not a.get("uncharged")]
+        if len(charged) >= policy["max_attempts"] or remaining <= 0.000001:
             last_reason = item["attempts"][-1].get("reason", "") if item["attempts"] else ""
             transition(
                 item, "blocked", "Attempt or usage allowance exhausted. Inspect attempt logs and revise the plan or policy. " + last_reason
@@ -466,6 +498,7 @@ def drive(project, directory, state):
             )
             attempt["worker_log"] = str(log)
             if code:
+                attempt["worker_failure_class"] = classify_worker_failure(_tail(log), _tail(error_log))
                 raise ValueError(f"Worker exited {code}. Inspect {log}; check adapter/authentication or implementation.")
             if policy["adapter"] == "claude":
                 response = json.loads(log.read_text())
@@ -479,6 +512,7 @@ def drive(project, directory, state):
                     or not math.isfinite(cost)
                     or cost < 0
                 ):
+                    attempt["worker_failure_class"] = classify_worker_failure(str(response.get("result", "")), _tail(error_log))
                     raise ValueError("Agent error or missing usage telemetry. Inspect worker log and adapter compatibility.")
                 if cost > attempt["budget_usd"]:
                     state["reserved_usd"] += cost - attempt["budget_usd"]
@@ -568,6 +602,21 @@ def drive(project, directory, state):
             attempt["outcome"] = "failed"
             attempt["failure_category"] = failure_category
             attempt["reason"] = str(exc)
+            klass = attempt.get("worker_failure_class")
+            no_change = failure_category == "infrastructure" and not changed_paths(work) if work.exists() else True
+            free_used = any(a.get("uncharged") for a in item["attempts"][:-1])
+            if klass == "auth":
+                attempt["failure_category"] = "auth"
+                attempt["uncharged"] = True
+                state["reserved_usd"] -= attempt["budget_usd"] - (attempt.get("cost_usd") or 0)
+                transition(item, "blocked", f"Worker authentication failed; a retry cannot help. Fix credentials and plan a new run. {exc}")
+                attempt["finished_at"] = time.time()
+                checkpoint(directory, state)
+                continue
+            if klass == "transient" and no_change and not free_used:
+                attempt["failure_category"] = "transient"
+                attempt["uncharged"] = True
+                state["reserved_usd"] -= attempt["budget_usd"] - (attempt.get("cost_usd") or 0)
             if item["phase"] == "integrating":
                 transition(item, "blocked", str(exc))
             else:
