@@ -522,6 +522,8 @@ def test_retry_records_failure_log(project):
         ("HTTP 401 Unauthorized", "auth"),
         ("HTTP 403 rate limit", "auth"),
         ("tests failed: assertion error", "agent"),
+        ("File \"app.py\", line 401, in handler", "agent"),
+        ("expected 500 rows, got 3", "agent"),
         ("", "agent"),
     ],
 )

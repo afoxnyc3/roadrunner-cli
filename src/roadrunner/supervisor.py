@@ -285,12 +285,14 @@ def retry_context(item, scratch):
 
 
 _TRANSIENT_RE = re.compile(
-    r"overloaded|\b(?:429|500|502|503|504|529)\b|rate.?limit|too many requests|econnreset|etimedout|econnrefused|"
-    r"enotfound|socket hang up|network (?:error|unreachable)|temporarily unavailable|connection (?:reset|refused|error)",
+    r"overloaded|(?:http|status|error|code)[\s:=]*(?:429|500|502|503|504|529)\b|rate.?limit|too many requests|"
+    r"econnreset|etimedout|econnrefused|enotfound|socket hang up|network (?:error|unreachable)|"
+    r"temporarily unavailable|connection (?:reset|refused|error)",
     re.IGNORECASE,
 )
 _AUTH_RE = re.compile(
-    r"not logged in|\b401\b|\b403\b|unauthori[sz]ed|authentication|invalid api key|invalid x-api-key|claude auth login|credit balance",
+    r"not logged in|(?:http|status|error|code)[\s:=]*(?:401|403)\b|unauthori[sz]ed|authentication|"
+    r"invalid api key|invalid x-api-key|claude auth login|credit balance",
     re.IGNORECASE,
 )
 
