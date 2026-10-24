@@ -34,6 +34,7 @@ Design notes
 
 from __future__ import annotations
 
+import gzip
 import json
 import os
 import subprocess
@@ -101,22 +102,39 @@ def _iso_for_filename(iso: str) -> str:
     return iso.replace(":", "").replace("+", "").replace(".", "_")
 
 
+def _trace_files() -> list[Path]:
+    """Rotated trace archives (oldest first) followed by the live trace.
+
+    Rotation renames ``trace.jsonl`` to ``trace.jsonl.<stamp>`` and gzips it, so
+    a session that spans a rotation has events in several files. Rotation moves
+    events rather than copying them, so reading every file counts each once.
+    """
+    rotated = sorted(
+        p for p in TRACE_LOG.parent.glob(TRACE_LOG.name + ".*") if p.is_file()
+    )
+    live = [TRACE_LOG] if TRACE_LOG.exists() else []
+    return rotated + live
+
+
 def _read_trace_events() -> list[dict[str, Any]]:
-    """Read trace.jsonl into a list of dicts. Missing file → empty."""
-    if not TRACE_LOG.exists():
-        return []
+    """Read the trace (rotated archives plus live file) into a list of dicts."""
     out: list[dict[str, Any]] = []
-    with open(TRACE_LOG, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                # A partially-written line at tail is the only realistic
-                # cause; skip it rather than crash the summary.
-                continue
+    for path in _trace_files():
+        opener = gzip.open if path.suffix == ".gz" else open
+        try:
+            with opener(path, "rt", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        out.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        # A partially-written line at tail is the only realistic
+                        # cause; skip it rather than crash the summary.
+                        continue
+        except (OSError, EOFError):
+            continue
     return out
 
 

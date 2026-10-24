@@ -50,6 +50,16 @@ def run_hook(hook_name: str, stdin_data: dict | str = "", env_extra: dict | None
 
 
 class TestStopHook:
+    def test_malformed_tasks_yaml_halts_cleanly(self):
+        (PROJECT_ROOT / "tasks" / "tasks.yaml").write_text("tasks: [unclosed\n  - : :\n")
+        result = run_hook("stop_hook.sh", {"stop_hook_active": False, "last_assistant_message": "working"})
+        assert result.returncode == 0
+        assert "Traceback" not in result.stderr
+        output = json.loads(result.stdout)
+        assert output["continue"] is False
+        assert "tasks.yaml" in output["stopReason"]
+        assert "ROADMAP_COMPLETE" not in result.stdout
+
     def test_stop_hook_active_consults_controller(self):
         result = run_hook("stop_hook.sh", {"stop_hook_active": True, "last_assistant_message": ""})
         assert result.returncode == 0

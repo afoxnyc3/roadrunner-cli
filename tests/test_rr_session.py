@@ -104,6 +104,34 @@ class TestFinalizeCurrent:
         assert data["validation_runs"] == 3
         assert data["validation_failures"] == 1
 
+    def test_counts_events_across_trace_rotation(self, tmp_session_root, tmp_path):
+        import gzip
+
+        path = rr_session.open_session()
+        before = [
+            {"ts": _ts(1), "event": "task_start", "task_id": "T-1"},
+            {"ts": _ts(2), "event": "validate_end", "task_id": "T-1", "passed": True},
+            {"ts": _ts(3), "event": "task_complete", "task_id": "T-1"},
+        ]
+        after = [
+            {"ts": _ts(4), "event": "validate_end", "task_id": "T-2", "passed": False},
+            {"ts": _ts(5), "event": "task_complete", "task_id": "T-2"},
+            {"ts": _ts(6), "event": "task_block", "task_id": "T-3"},
+        ]
+        logs = tmp_path / "logs"
+        # Rotation mid-session: archived events are gzipped, live file starts fresh.
+        with gzip.open(logs / "trace.jsonl.20990101T000000_000000Z.gz", "wt") as f:
+            for ev in before:
+                f.write(json.dumps(ev) + "\n")
+        _write_trace(tmp_path, after)
+        rr_session.finalize_current()
+        data = json.loads(path.read_text())
+
+        assert data["tasks_completed"] == ["T-1", "T-2"]
+        assert data["tasks_blocked"] == ["T-3"]
+        assert data["validation_runs"] == 2
+        assert data["validation_failures"] == 1
+
     def test_retry_counter(self, tmp_session_root, tmp_path):
         rr_session.open_session()
         events = [

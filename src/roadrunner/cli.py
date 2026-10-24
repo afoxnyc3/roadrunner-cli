@@ -1983,7 +1983,26 @@ def cmd_check_stop(args: argparse.Namespace) -> None:
             )
             sys.exit(0)
 
-        tasks = load_tasks()
+        try:
+            tasks = load_tasks()
+        except (ValueError, OSError) as exc:
+            # A broken queue cannot drive decisions. Halt in a controlled way: structured
+            # JSON, exit 0, an actionable instruction, and never a completion record.
+            _finalize_session_quiet()
+            print(
+                json.dumps(
+                    {
+                        "continue": False,
+                        "stopReason": (
+                            f"Roadmap loop halted: the task queue cannot be read ({exc}). "
+                            "Restore tasks/tasks.yaml from tasks/tasks.yaml.bak or version control, "
+                            "or fix the error above, then resume the session."
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            sys.exit(0)
         last_msg = stdin_data.get("last_assistant_message", "")
 
         # If Claude Code flagged this fire as a potential hook loop AND there is
