@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -484,14 +485,78 @@ def is_completion_signal(last_msg: str) -> bool:
 # ── Git helpers (partial-work recovery) ──────────────────────────────────────
 
 
-def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args],
-        capture_output=True,
+DEFAULT_GIT_TIMEOUT = 60  # seconds; override with ROADRUNNER_GIT_TIMEOUT
+GIT_TIMEOUT_RETURNCODE = 124  # same convention as timeout(1)
+
+
+def _git_timeout() -> float:
+    try:
+        value = float(os.environ.get("ROADRUNNER_GIT_TIMEOUT", DEFAULT_GIT_TIMEOUT))
+    except ValueError:
+        return DEFAULT_GIT_TIMEOUT
+    return value if value > 0 else DEFAULT_GIT_TIMEOUT
+
+
+def _kill_group(process: subprocess.Popen) -> None:
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _run_bounded(
+    args: Any, *, shell: bool = False, timeout: float, env: dict[str, str] | None = None
+) -> tuple[int, str, str, bool]:
+    """Run in its own process group; on timeout kill the whole group (descendants included).
+
+    Returns (returncode, stdout, stderr, timed_out). Partial output is kept on timeout.
+    """
+    process = subprocess.Popen(
+        args,
+        shell=shell,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,
         text=True,
+        errors="replace",
         cwd=ROOT,
-        check=check,
+        env=env,
+        start_new_session=True,
     )
+    try:
+        out, err = process.communicate(timeout=timeout)
+        return process.returncode, out or "", err or "", False
+    except subprocess.TimeoutExpired:
+        _kill_group(process)
+        try:
+            out, err = process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            out, err = "", ""
+        return -1, out or "", err or "", True
+    except BaseException:
+        _kill_group(process)
+        raise
+
+
+def _git(*args: str, check: bool = True) -> subprocess.CompletedProcess:
+    """Run git with a wall-clock bound and no interactive prompts.
+
+    A hang (credential prompt, stuck remote) returns returncode 124 with an actionable
+    stderr, so callers treat it as a failure and never as success.
+    """
+    timeout = _git_timeout()
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0", GIT_ASKPASS="true", GCM_INTERACTIVE="never")
+    code, out, err, timed_out = _run_bounded(["git", *args], timeout=timeout, env=env)
+    if timed_out:
+        code = GIT_TIMEOUT_RETURNCODE
+        err = (
+            f"git {' '.join(args)} timed out after {timeout:g}s (credential prompt or unreachable remote?). "
+            f"Fix git access or raise ROADRUNNER_GIT_TIMEOUT, then retry.\n" + err
+        )
+    result = subprocess.CompletedProcess(["git", *args], code, out, err)
+    if check and code != 0:
+        raise subprocess.CalledProcessError(code, result.args, out, err)
+    return result
 
 
 def _is_git_repo() -> bool:
@@ -743,26 +808,10 @@ def run_validation(task: Task) -> tuple[bool, list[ValidationResult]]:
 
     def _run_one(cmd: str, phase: str) -> bool:
         t0 = time.monotonic()
-        timed_out = False
-        try:
-            result = subprocess.run(
-                cmd,
-                shell=True,
-                capture_output=True,
-                text=True,
-                cwd=ROOT,
-                timeout=timeout,
-            )
-            passed = result.returncode == 0
-            stdout = _head_tail(result.stdout)
-            stderr = _head_tail(result.stderr)
-            returncode = result.returncode
-        except subprocess.TimeoutExpired as exc:
-            passed = False
-            timed_out = True
-            stdout = _head_tail((exc.stdout or b"").decode(errors="replace"))
-            stderr = _head_tail((exc.stderr or b"").decode(errors="replace"))
-            returncode = -1
+        returncode, raw_out, raw_err, timed_out = _run_bounded(cmd, shell=True, timeout=timeout)
+        passed = not timed_out and returncode == 0
+        stdout = _head_tail(raw_out)
+        stderr = _head_tail(raw_err)
         elapsed = (time.monotonic() - t0) * 1000
         entry: ValidationResult = {
             "command": cmd,
